@@ -1,0 +1,40 @@
+version: '3'
+
+# Internal Taskfile - runs inside the CascadeGuard Docker image.
+# /app and /cdk8s contain the baked-in venvs and source code.
+# /workspace is the mounted state/exemplar repo root.
+
+tasks:
+  generate:
+    desc: "Generate state files from /workspace/images.yaml"
+    cmds:
+      - /app/.venv/bin/python /app/generate_state.py --images-yaml /workspace/images.yaml --output-dir /workspace
+
+  synth:
+    desc: "Generate Kargo manifests from state files (CDK8s synthesis)"
+    env:
+      IMAGE_FACTORY_STATE_DIR: /workspace
+      IMAGES_YAML: /workspace/images.yaml
+    cmds:
+      - /cdk8s/.venv/bin/python /cdk8s/main.py
+
+  generate-and-synth:
+    desc: "Run the complete generation workflow (generate state files then synthesise)"
+    cmds:
+      - task: generate
+      - task: synth
+
+  clean:
+    desc: "Clean generated files from /workspace"
+    cmds:
+      - rm -rf /workspace/base-images/ /workspace/images/ /workspace/dist/
+
+  status:
+    desc: "Show status of generated files in /workspace"
+    cmds:
+      - |
+        echo "=== Generated State Files ==="
+        ls -lh /workspace/base-images/ /workspace/images/ 2>/dev/null || echo "No state files generated"
+        echo ""
+        echo "=== Generated Manifests ==="
+        ls -lh /workspace/dist/cdk8s/ 2>/dev/null || echo "No manifests generated"

@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""Unit tests for the image factory tool."""
+
+import pytest
+import yaml
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import sys
+import os
+
+# Add the parent directory to the path so we can import app
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app import ImageFactoryTool
+
+
+class TestImageFactoryTool:
+    """Test suite for ImageFactoryTool."""
+
+    @pytest.fixture
+    def temp_factory(self):
+        """Create a temporary image factory directory structure."""
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            # Create directory structure
+            (root / "state" / "images").mkdir(parents=True)
+            (root / "state" / "base-images").mkdir(parents=True)
+
+            yield root
+
+    def test_normalize_base_image_name(self, temp_factory):
+        """Test base image name normalization."""
+        tool = ImageFactoryTool(temp_factory)
+
+        assert (
+            tool.normalize_base_image_name("node:22-bookworm-slim")
+            == "node-22-bookworm-slim"
+        )
+        assert (
+            tool.normalize_base_image_name("docker.io/library/node:22")
+            == "library-node-22"
+        )
+        assert (
+            tool.normalize_base_image_name("ghcr.io/owner/image:v1.0")
+            == "owner-image-v1.0"
+        )
+
+    def test_parse_image_reference(self, temp_factory):
+        """Test parsing image references."""
+        tool = ImageFactoryTool(temp_factory)
+
+        # Official Docker image
+        result = tool.parse_image_reference("node:22-bookworm-slim")
+        assert result["registry"] == "docker.io"
+        assert result["repository"] == "library/node"
+        assert result["tag"] == "22-bookworm-slim"
+
+        # Custom registry
+        result = tool.parse_image_reference("ghcr.io/owner/image:v1.0")
+        assert result["registry"] == "ghcr.io"
+        assert result["repository"] == "owner/image"
+        assert result["tag"] == "v1.0"
+
+        # No tag
+        result = tool.parse_image_reference("nginx")
+        assert result["repository"] == "library/nginx"
+        assert result["tag"] == "latest"
+
+    def test_parse_dockerfile_multi_stage(self, temp_factory):
+        """Test extracting all base images from multi-stage Dockerfile."""
+        tool = ImageFactoryTool(temp_factory)
+
+        # Create a multi-stage Dockerfile
+        dockerfile = temp_factory / "Dockerfile"
+        dockerfile.write_text("""
+FROM python:3.12-slim AS builder
+WORKDIR /app
+COPY . .
+RUN pip install -r requirements.txt
+
+FROM gcr.io/distroless/python3-debian12:latest
+COPY --from=builder /app /app
+WORKDIR /app
+""")
+
+        base_images = tool.parse_dockerfile_base_images(dockerfile)
+        assert len(base_images) == 2
+        assert "python:3.12-slim" in base_images
+        assert "gcr.io/distroless/python3-debian12:latest" in base_images
+
+    def test_parse_dockerfile_deduplication(self, temp_factory):
+        """Test deduplication of repeated base images in same Dockerfile."""
+        tool = ImageFactoryTool(temp_factory)
+
+        # Create a Dockerfile with duplicate FROM statements
+        dockerfile = temp_factory / "Dockerfile"
+        dockerfile.write_text("""
+FROM node:18-alpine AS deps
+WORKDIR /app
+COPY package.json .
+RUN npm install
+
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:18-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+""")
+
+        # The parse method returns all FROM statements (no deduplication at parse level)
+        base_images = tool.parse_dockerfile_base_images(dockerfile)
+        assert len(base_images) == 3
+        assert all(img == "node:18-alpine" for img in base_images)
+
+        # Deduplication happens during processing when normalizing names
+        normalized_names = []
+        seen = set()
+        for base_image_ref in base_images:
+            base_image_name = tool.normalize_base_image_name(base_image_ref)
+            if base_image_name not in seen:
+                normalized_names.append(base_image_name)
+                seen.add(base_image_name)
+
+        assert len(normalized_names) == 1
+        assert "node-18-alpine" in normalized_names
+
+    def test_parse_dockerfile_stage_references(self, temp_factory):
+        """Test that stage references are not treated as base images."""
+        tool = ImageFactoryTool(temp_factory)
+
+        # Create a Dockerfile with stage references
+        dockerfile = temp_factory / "Dockerfile"
+        dockerfile.write_text("""
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+""")
+
+        base_images = tool.parse_dockerfile_base_images(dockerfile)
+        assert len(base_images) == 2
+        assert "node:18-alpine" in base_images
+        assert "nginx:alpine" in base_images
+        # "builder" should not be included as it's a stage reference
+
+    def test_generate_base_image_state(self, temp_factory):
+        """Test generating base image state."""
+        tool = ImageFactoryTool(temp_factory)
+
+        state = tool.generate_base_image_state("node:22-bookworm-slim")
+
+        assert state["name"] == "node-22-bookworm-slim"
+        assert state["fullImage"] == "node:22-bookworm-slim"
+        assert state["registry"] == "docker.io"
+        assert state["repository"] == "library/node"
+        assert state["tag"] == "22-bookworm-slim"
+        assert state["allowTags"] == "^22-bookworm-slim$"
+        assert state["repoURL"] == "docker.io/library/node"
+
+    def test_generate_image_state_managed(self, temp_factory):
+        """Test generating state for a managed image."""
+        tool = ImageFactoryTool(temp_factory)
+
+        image_config = {
+            "name": "backstage",
+            "registry": "ghcr.io",
+            "repository": "owner/backstage",
+            "source": {
+                "provider": "github",
+                "repo": "owner/repo",
+                "dockerfile": "Dockerfile",
+            },
+            "rebuildDelay": "7d",
+            "autoRebuild": True,
+        }
+
+        state = tool.generate_image_state(image_config, ["node-22-bookworm-slim"])
+
+        assert state["name"] == "backstage"
+        assert state["discoveryStatus"] == "pending"
+        assert state["baseImages"] == ["node-22-bookworm-slim"]
+        assert state["enrollment"]["registry"] == "ghcr.io"
+        assert state["enrollment"]["source"]["repo"] == "owner/repo"
+        assert "allowTags" not in state  # Managed images don't have warehouse fields
+
+    def test_generate_image_state_external(self, temp_factory):
+        """Test generating state for an external image."""
+        tool = ImageFactoryTool(temp_factory)
+
+        image_config = {
+            "name": "postgres",
+            "registry": "docker.io",
+            "repository": "library/postgres",
+            "allowTags": "^16-alpine$",
+            "rebuildDelay": "30d",
+        }
+
+        state = tool.generate_image_state(image_config, [])
+
+        assert state["name"] == "postgres"
+        assert state["discoveryStatus"] == "external"
+        assert state["baseImages"] == []
+        assert "source" not in state["enrollment"]
+        assert state["allowTags"] == "^16-alpine$"
+        assert state["repoURL"] == "docker.io/library/postgres"
+
+    def test_merge_state_preserves_runtime_data(self, temp_factory):
+        """Test that merge preserves runtime data while updating config."""
+        tool = ImageFactoryTool(temp_factory)
+
+        existing = {
+            "name": "backstage",
+            "enrolledAt": "2024-01-01T00:00:00Z",
+            "enrollment": {"registry": "ghcr.io", "repository": "old/backstage"},
+            "currentDigest": "sha256:abc123",
+            "lastBuilt": "2024-12-01T00:00:00Z",
+            "rebuildHistory": [{"date": "2024-12-01"}],
+        }
+
+        new = {
+            "name": "backstage",
+            "enrolledAt": "2024-12-04T00:00:00Z",
+            "enrollment": {"registry": "ghcr.io", "repository": "new/backstage"},
+            "baseImages": ["node-22-bookworm-slim"],
+        }
+
+        merged = tool.merge_state(existing, new, prefer_new=True)
+
+        # Config updated from new
+        assert merged["enrollment"]["repository"] == "new/backstage"
+        assert merged["baseImages"] == ["node-22-bookworm-slim"]
+
+        # Runtime data preserved from existing
+        assert merged["currentDigest"] == "sha256:abc123"
+        assert merged["lastBuilt"] == "2024-12-01T00:00:00Z"
+        # rebuildHistory is not a preserved runtime field in the current implementation
+
+    def test_process_creates_state_files(self, temp_factory):
+        """Test full processing creates expected state files."""
+        tool = ImageFactoryTool(temp_factory)
+
+        # Create images.yaml
+        images_yaml = temp_factory / "images.yaml"
+        images_yaml.write_text(
+            yaml.dump(
+                [
+                    {
+                        "name": "test-image",
+                        "registry": "ghcr.io",
+                        "repository": "owner/test",
+                        "source": {
+                            "provider": "github",
+                            "repo": "owner/repo",
+                            "dockerfile": "Dockerfile",
+                        },
+                    }
+                ]
+            )
+        )
+
+        # Create Dockerfile
+        dockerfile = temp_factory.parent / "Dockerfile"
+        dockerfile.write_text("FROM node:22-bookworm-slim\n")
+
+        # Process
+        tool.process()
+
+        # Check image state file created
+        image_state_file = temp_factory / "state" / "images" / "test-image.yaml"
+        assert image_state_file.exists()
+
+        with open(image_state_file) as f:
+            image_state = yaml.safe_load(f)
+
+        assert image_state["name"] == "test-image"
+        assert "node-22-bookworm-slim" in image_state["baseImages"]
+
+        # Check base image state file created
+        base_state_file = (
+            temp_factory / "state" / "base-images" / "node-22-bookworm-slim.yaml"
+        )
+        assert base_state_file.exists()
+
+        with open(base_state_file) as f:
+            base_state = yaml.safe_load(f)
+
+        assert base_state["name"] == "node-22-bookworm-slim"
+        # dependentImages is computed, not stored
+
+    def test_process_updates_existing_state(self, temp_factory):
+        """Test that processing updates existing state files correctly."""
+        tool = ImageFactoryTool(temp_factory)
+
+        # Create initial state file with runtime data
+        image_state_file = temp_factory / "state" / "images" / "test-image.yaml"
+        image_state_file.write_text(
+            yaml.dump(
+                {
+                    "name": "test-image",
+                    "enrolledAt": "2024-01-01T00:00:00Z",
+                    "enrollment": {"registry": "ghcr.io", "repository": "owner/old"},
+                    "currentDigest": "sha256:preserved",
+                    "lastBuilt": "2024-11-01T00:00:00Z",
+                }
+            )
+        )
+
+        # Create images.yaml with updated config
+        images_yaml = temp_factory / "images.yaml"
+        images_yaml.write_text(
+            yaml.dump(
+                [
+                    {
+                        "name": "test-image",
+                        "registry": "ghcr.io",
+                        "repository": "owner/new",
+                        "source": {
+                            "provider": "github",
+                            "repo": "owner/repo",
+                            "dockerfile": "Dockerfile",
+                        },
+                    }
+                ]
+            )
+        )
+
+        # Create Dockerfile
+        dockerfile = temp_factory.parent / "Dockerfile"
+        dockerfile.write_text("FROM alpine:latest\n")
+
+        # Process
+        tool.process()
+
+        # Check state was updated
+        with open(image_state_file) as f:
+            updated_state = yaml.safe_load(f)
+
+        # Config updated
+        assert updated_state["enrollment"]["repository"] == "owner/new"
+
+        # Runtime data preserved
+        assert updated_state["currentDigest"] == "sha256:preserved"
+        assert updated_state["lastBuilt"] == "2024-11-01T00:00:00Z"
+
+
+class TestGenerateBuildWorkflow:
+    """Test suite for _generate_build_workflow."""
+
+    @pytest.fixture
+    def output_dir(self):
+        """Create a temporary output directory."""
+        with TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def _read_workflow(self, output_dir, name):
+        """Read generated workflow file content."""
+        wf = output_dir / ".github" / "workflows" / f"build-{name}.yml"
+        assert wf.exists(), f"Workflow file {wf} was not created"
+        return wf.read_text()
+
+    def test_generates_standard_workflow(self, output_dir):
+        """Test generating a standard workflow without local config."""
+        from generate_state import _generate_build_workflow
+
+        image = {
+            "name": "test-app",
+            "registry": "ghcr.io",
+            "repository": "org/test-app",
+            "source": {
+                "provider": "github",
+                "repo": "upstream/test-app",
+                "branch": "main",
+                "dockerfile": "Dockerfile",
+            },
+        }
+
+        result = _generate_build_workflow(image, output_dir)
+        assert result is True
+
+        content = self._read_workflow(output_dir, "test-app")
+        assert "# Auto-generated by Image Factory" in content
+        assert "repository: upstream/test-app" in content
+        assert "file: Dockerfile" in content
+        assert 'default: "latest"' in content
+        # Should NOT have local steps
+        assert "Checkout local files" not in content
+        assert "Apply patch" not in content
+        assert "Read version" not in content
+        assert "Bump version" not in content
+        assert "increment" not in content
+        # No version file means contents: read only
+        assert "contents: read" in content
+
+    def test_generates_workflow_with_local_block(self, output_dir):
+        """Test generating a workflow with local config (patches + version)."""
+        from generate_state import _generate_build_workflow
+
+        image = {
+            "name": "test-app",
+            "registry": "ghcr.io",
+            "repository": "org/test-app",
+            "source": {
+                "provider": "github",
+                "repo": "upstream/test-app",
+                "branch": "main",
+                "dockerfile": "Dockerfile",
+            },
+            "local": {
+                "dir": "local/test-app",
+                "patchFiles": ["Dockerfile.patch"],
+                "versionFile": "VERSION",
+            },
+        }
+
+        result = _generate_build_workflow(image, output_dir)
+        assert result is True
+
+        content = self._read_workflow(output_dir, "test-app")
+        assert "# Auto-generated by Image Factory" in content
+        # Local files checkout
+        assert "Checkout local files" in content
+        assert "sparse-checkout: local/test-app" in content
+        # Patch applied
+        assert "Apply patch Dockerfile.patch" in content
+        assert "git apply _image-factory/local/test-app/Dockerfile.patch" in content
+        # Version file read
+        assert "Read version" in content
+        assert "cat _image-factory/local/test-app/VERSION" in content
+        # Resolve tag step with suffix support
+        assert "Resolve tag" in content
+        assert "inputs.suffix" in content
+        assert "steps.tag.outputs.tag" in content
+        # No tag input, no hardcoded default
+        assert 'default: "latest"' not in content
+        assert "inputs.tag" not in content
+        # suffix and increment inputs present
+        assert "suffix" in content
+        assert "increment" in content
+        assert 'default: "patch"' in content
+        assert "options: [major, minor, patch]" in content
+        # Still uses upstream source as context
+        assert "repository: upstream/test-app" in content
+        assert "context: ." in content
+        # Bump step present, gated on empty suffix
+        assert "Bump version" in content
+        assert "if: inputs.suffix == ''" in content
+        assert "git commit" in content
+        assert "git push" in content
+        # Needs write permission to commit back
+        assert "contents: write" in content
+
+    def test_generates_workflow_with_local_dockerfile(self, output_dir):
+        """Test generating a workflow with local.dockerfile (no upstream checkout)."""
+        from generate_state import _generate_build_workflow
+
+        image = {
+            "name": "test-app",
+            "registry": "ghcr.io",
+            "repository": "org/test-app",
+            "source": {
+                "provider": "github",
+                "repo": "upstream/test-app",
+            },
+            "local": {
+                "dir": "local/test-app",
+                "dockerfile": "Dockerfile",
+                "versionFile": "VERSION",
+            },
+        }
+
+        result = _generate_build_workflow(image, output_dir)
+        assert result is True
+
+        content = self._read_workflow(output_dir, "test-app")
+        assert "# Auto-generated by Image Factory" in content
+        # Should checkout state repo (no repository: override)
+        assert "Checkout\n" in content or "- name: Checkout\n" in content
+        assert "repository:" not in content
+        # Dockerfile and context point to local dir
+        assert "file: local/test-app/Dockerfile" in content
+        assert "context: local/test-app" in content
+        # No upstream checkout, no patches
+        assert "Checkout source" not in content
+        assert "Checkout local files" not in content
+        assert "Apply patch" not in content
+        # VERSION is for the image tag only, not passed as a build arg
+        assert "build-args" not in content
+        # Version, tag, bump all present
+        assert "Read version" in content
+        assert "Resolve tag" in content
+        assert "Bump version" in content
+        assert "contents: write" in content
+        # Bump step works directly (no _image-factory prefix)
+        assert "_image-factory" not in content
+
+    def test_skips_when_source_has_workflow(self, output_dir):
+        """Test that workflow generation is skipped when source.workflow is set."""
+        from generate_state import _generate_build_workflow
+
+        image = {
+            "name": "test-app",
+            "source": {
+                "workflow": "existing.yml",
+                "repo": "org/repo",
+            },
+        }
+
+        result = _generate_build_workflow(image, output_dir)
+        assert result is False
+
+    def test_skips_when_no_source(self, output_dir):
+        """Test that workflow generation is skipped for external images."""
+        from generate_state import _generate_build_workflow
+
+        image = {"name": "postgres", "registry": "docker.io"}
+
+        result = _generate_build_workflow(image, output_dir)
+        assert result is False
+
+    def test_idempotent_no_rewrite(self, output_dir):
+        """Test that unchanged workflow is not rewritten."""
+        from generate_state import _generate_build_workflow
+
+        image = {
+            "name": "test-app",
+            "registry": "ghcr.io",
+            "repository": "org/test-app",
+            "source": {
+                "provider": "github",
+                "repo": "upstream/test-app",
+                "branch": "main",
+                "dockerfile": "Dockerfile",
+            },
+        }
+
+        # First generation
+        result1 = _generate_build_workflow(image, output_dir)
+        assert result1 is True
+
+        # Second generation with same config — should skip
+        result2 = _generate_build_workflow(image, output_dir)
+        assert result2 is False
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

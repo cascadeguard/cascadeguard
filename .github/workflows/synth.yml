@@ -1,0 +1,88 @@
+name: CDK8s Synth
+
+on:
+  pull_request:
+    paths:
+      - 'cdk8s/**'
+      - '.github/workflows/synth.yml'
+  
+  workflow_dispatch:
+
+jobs:
+  synth:
+    name: Synthesize Kargo Resources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout cascadeguard (code)
+        uses: actions/checkout@v4
+        with:
+          path: cascadeguard
+      
+      - name: Checkout state repo (config)
+        uses: actions/checkout@v4
+        with:
+          repository: craigedmunds/cascadeguard-state
+          path: cascadeguard-state
+          token: ${{ secrets.PAT_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Task
+        uses: arduino/setup-task@v2
+      
+      - name: Setup CDK8s environment
+        working-directory: cascadeguard
+        run: task cdk8s:setup
+      
+      - name: Synthesize Kargo manifests
+        working-directory: cascadeguard/cdk8s
+        env:
+          IMAGE_FACTORY_STATE_DIR: ${{ github.workspace }}/cascadeguard-state
+          IMAGES_YAML: ${{ github.workspace }}/cascadeguard-state/images.yaml
+        run: python main.py
+      
+      - name: Check if synthesis generated changes
+        id: check_changes
+        working-directory: cascadeguard-state
+        run: |
+          if git diff --quiet dist/cdk8s/image-factory.k8s.yaml; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "Kargo resources are already up to date"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Synthesis generated new Kargo resources"
+            echo ""
+            echo "Changes:"
+            git diff --stat dist/cdk8s/image-factory.k8s.yaml
+          fi
+      
+      - name: Commit synthesized resources to state repo
+        if: steps.check_changes.outputs.has_changes == 'true'
+        working-directory: cascadeguard-state
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add dist/cdk8s/image-factory.k8s.yaml
+          git commit -m "Auto-synth: Regenerate Kargo resources" \
+            -m "Synthesized from cascadeguard@${{ github.sha }}" \
+            -m "Triggered by: ${{ github.event_name }}"
+          git push
+      
+      - name: Comment on PR
+        if: steps.check_changes.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'Kargo resources automatically synthesized and committed to the state repository.'
+            })

@@ -1,0 +1,47 @@
+# For inclusion in a CascadeGuard state repo.
+# Requires Docker. The CascadeGuard image contains all tooling (Python venvs, Task).
+# Include this file from your state repo's Taskfile.yaml:
+#
+#   version: '3'
+#   includes:
+#     shared:
+#       taskfile: https://raw.githubusercontent.com/cascadeguard/cascadeguard/v1.0.0/Taskfile.shared.yaml
+#       flatten: true
+
+version: '3'
+
+vars:
+  CASCADEGUARD_IMAGE_VERSION: v1.0.0
+  CASCADEGUARD_IMAGE: ghcr.io/cascadeguard/cascadeguard:{{.CASCADEGUARD_IMAGE_VERSION}}
+
+tasks:
+  generate:
+    desc: "Generate state files from images.yaml"
+    cmds:
+      - docker run --rm -v "$(pwd):/workspace" {{.CASCADEGUARD_IMAGE}} generate
+
+  synth:
+    desc: "Generate Kargo manifests from state files (CDK8s synthesis)"
+    cmds:
+      - docker run --rm -v "$(pwd):/workspace" {{.CASCADEGUARD_IMAGE}} synth
+
+  generate-and-synth:
+    desc: "Run the complete generation workflow (generate then synth)"
+    cmds:
+      - task: generate
+      - task: synth
+
+  clean:
+    desc: "Clean generated files (base-images/, images/, dist/)"
+    cmds:
+      - docker run --rm -v "$(pwd):/workspace" {{.CASCADEGUARD_IMAGE}} clean
+
+  status:
+    desc: "Show status of generated files"
+    cmds:
+      - docker run --rm -v "$(pwd):/workspace" {{.CASCADEGUARD_IMAGE}} status
+
+  deploy:
+    desc: "Apply generated manifests to cluster"
+    cmds:
+      - kubectl apply -f dist/cdk8s/image-factory.k8s.yaml

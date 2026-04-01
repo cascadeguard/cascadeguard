@@ -1,0 +1,10 @@
+# CDK8s Image Configuration
+# This file contains image references used by CDK8s applications
+# It will be automatically updated by CascadeGuard when managed images are rebuilt
+
+images:
+  example-app:
+    registry: ghcr.io
+    repository: cascadeguard/example-app
+    tag: "1.0.0"  # This will be updated automatically by CascadeGuard
+    # Full reference: ghcr.io/cascadeguard/example-app:1.0.0

@@ -1,0 +1,18 @@
+{
+  "name": "image-factory-kargo-integration-test",
+  "version": "1.0.0",
+  "description": "Kargo integration test for Image Factory",
+  "main": "kargo-integration.test.ts",
+  "scripts": {
+    "test": "npx ts-node kargo-integration.test.ts",
+    "test:kargo": "npx ts-node kargo-integration.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": ["kargo", "integration-test", "image-factory"],
+  "author": "Platform Team",
+  "license": "MIT"
+}

@@ -1,0 +1,31 @@
+[project]
+name = "image-factory-cdk8s"
+version = "0.1.0"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "constructs~=10.4.3",
+    "cdk8s~=2.68.0",
+    "pyyaml"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "hypothesis>=6.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["lib*"]
+exclude = ["imports*", "dist*", "tests*"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+

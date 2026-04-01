@@ -1,0 +1,82 @@
+name: Tests
+
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'cdk8s/**'
+      - 'tests/**'
+      - 'images.yaml'
+      - 'Taskfile.yaml'
+      - '.github/workflows/test.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Task
+        uses: arduino/setup-task@v2
+      
+      - name: Setup environment
+        run: task test:unit:setup
+      
+      - name: Run unit tests
+        run: task test:unit
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Task
+        uses: arduino/setup-task@v2
+      
+      - name: Setup environment
+        run: task test:integration:setup
+      
+      - name: Run integration tests
+        run: task test:integration
+
+  acceptance-tests:
+    name: Acceptance Tests
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install Task
+        uses: arduino/setup-task@v2
+      
+      - name: Run acceptance tests
+        run: task test:acceptance

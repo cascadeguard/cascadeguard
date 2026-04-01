@@ -1,0 +1,174 @@
+version: '3'
+
+tasks:
+  # Setup (code repo has app/ and cdk8s/ at root level)
+  app:setup:
+    desc: "Set up Image Factory app component"
+    dir: app
+    cmds:
+      - cmd: echo "🔧 Setting up Image Factory app environment..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            echo "CI environment detected, skipping virtual environment creation"
+          else
+            if [ ! -d ".venv" ]; then
+              echo "Creating virtual environment..."
+              python3 -m venv .venv
+            fi
+          fi
+        silent: true
+      - cmd: |
+          echo "Installing dependencies..."
+          if [ -n "$CI" ]; then
+            pip install -e ".[dev]"
+          else
+            .venv/bin/pip install -e ".[dev]"
+          fi
+        silent: true
+
+  cdk8s:setup:
+    desc: "Set up Image Factory CDK8s component"
+    dir: cdk8s
+    cmds:
+      - cmd: echo "🔧 Setting up Image Factory CDK8s environment..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            echo "CI environment detected, skipping virtual environment creation"
+          else
+            if [ ! -d ".venv" ]; then
+              echo "Creating virtual environment..."
+              
+              echo "Finding compatible Python version (>=3.10, <3.15)"
+              python_cmd=""
+              for py in python3.11 python3.12 python3.13 python3.10 python3; do
+                if command -v "$py" >/dev/null 2>&1; then
+                  if $py -c "import sys; exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1)" 2>/dev/null; then
+                    python_version=$($py -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+                    echo "Found compatible Python $python_version ($py)"
+                    python_cmd="$py"
+                    break
+                  fi
+                fi
+              done
+              
+              if [ -z "$python_cmd" ]; then
+                echo "Error: No compatible Python version found"
+                echo "Required: Python >=3.10, <3.15 (GitHub Actions uses 3.11)"
+                echo "Available Python versions:"
+                for py in python3.11 python3.12 python3.13 python3.10 python3; do
+                  if command -v "$py" >/dev/null 2>&1; then
+                    version=$($py -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
+                    echo "  $py: Python $version"
+                  fi
+                done
+                exit 1
+              fi
+              
+              $python_cmd -m venv .venv
+            fi
+          fi
+        silent: true
+      - cmd: |
+          echo "Installing dependencies..."
+          if [ -n "$CI" ]; then
+            pip install -e ".[dev]"
+          else
+            .venv/bin/pip install -e ".[dev]"
+          fi
+        silent: true
+
+  setup:
+    desc: "Set up Image Factory development environment"
+    cmds:
+      - task: app:setup
+      - task: cdk8s:setup
+
+  # Test setup and execution (code-only, no state required)
+  test:unit:setup:
+    desc: "Set up Image Factory development environment"
+    cmds:
+      - task: setup
+
+  test:unit:
+    desc: "Run unit tests for Image Factory"
+    cmds:
+      - task: app:test:unit
+      - task: cdk8s:test:unit
+
+  test:integration:setup:
+    desc: "Set up integration test"
+    dir: tests/integration
+    cmds:
+      - cmd: echo "🔧 Setting up integration test environment..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            echo "CI environment detected, skipping virtual environment creation"
+          else
+            if [ ! -d ".venv" ]; then
+              echo "Creating virtual environment..."
+              python3 -m venv .venv
+            fi
+          fi
+        silent: true
+      - cmd: |
+          echo "Installing dependencies..."
+          if [ -n "$CI" ]; then
+            pip install -e ".[dev]"
+          else
+            .venv/bin/pip install -e ".[dev]"
+          fi
+        silent: true
+
+  test:integration:
+    desc: "Run integration tests for Image Factory"
+    dir: tests/integration
+    cmds:
+      - cmd: |
+          if [ -n "$CI" ]; then
+            python -m pytest test_integration.py -v
+          else
+            .venv/bin/python -m pytest test_integration.py -v
+          fi
+      
+  test:acceptance:
+    desc: "Run acceptance tests for Image Factory"
+    dir: .
+    cmds:
+      - cmd: echo "🧪 Running Kargo acceptance tests..."
+        silent: true
+      - npm install
+      - npm run test:kargo
+
+  test:all:
+    desc: "Run all tests for Image Factory"
+    deps: [test:unit, test:integration, test:acceptance]
+
+  # Component unit tests (code-only)
+  app:test:unit:
+    desc: "Run unit tests for Image Factory app component"
+    dir: app
+    cmds:
+      - cmd: echo "🧪 Running Image Factory app unit tests..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            python -m pytest tests/test_app.py -v
+          else
+            .venv/bin/python -m pytest tests/test_app.py -v
+          fi
+
+  cdk8s:test:unit:
+    desc: "Run unit tests for Image Factory CDK8s component"
+    dir: cdk8s
+    cmds:
+      - cmd: echo "🧪 Running Image Factory CDK8s unit tests..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            python -m pytest test_main.py -v
+          else
+            .venv/bin/python -m pytest test_main.py -v
+          fi
