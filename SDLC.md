@@ -122,9 +122,9 @@ Branch naming: `<identifier>/<short-description>` (e.g., `42/add-vulnerability-s
 
 | Layer | What | Tools | Target |
 |---|---|---|---|
-| Static analysis | Linting, type checking, secret scanning | ruff/eslint, mypy/tsc, gitleaks | 100% of code |
+| Static analysis | Linting, type checking, secret scanning | Per-language linters, type checkers, gitleaks | 100% of code |
 | Unit tests | Pure functions, business logic, utilities | pytest / vitest | 80%+ line coverage |
-| Integration tests | Service boundaries, deployment validation | pytest | Key paths covered |
+| Integration tests | Service boundaries, deployment validation | pytest / vitest | Key paths covered |
 | E2E tests | Critical user flows, deployment smoke tests | Deployment-level flows | Top 5 user journeys |
 
 ### Testing Requirements

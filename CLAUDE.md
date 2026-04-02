@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-CascadeGuard is a container image security tool with Kubernetes infrastructure managed via cdk8s.
+CascadeGuard is a container image security tool that integrates with popular build and deployment pipelines.
 
 ## SDLC Process
 
@@ -46,7 +46,6 @@ This is the canonical process for how features move from idea to production.
 
 ## Tech Stack
 
-- **Infrastructure**: cdk8s (TypeScript) for Kubernetes manifests
 - **Testing**: pytest (Python), vitest (TypeScript)
 - **Task runner**: Taskfile (see `Taskfile.yaml`)
 
@@ -54,7 +53,6 @@ This is the canonical process for how features move from idea to production.
 
 | Directory | Purpose |
 |---|---|
-| `cdk8s/` | Kubernetes manifests (cdk8s TypeScript) |
 | `tests/` | Integration and acceptance tests |
 
 ## Development

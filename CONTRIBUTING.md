@@ -25,7 +25,7 @@ Use the format `<your-name>/<short-description>` or `<issue-number>/<short-descr
 ### Code Style
 
 - **Python**: Follow PEP 8. Use type hints for function signatures.
-- **TypeScript**: Follow the existing cdk8s conventions in `cdk8s/`.
+- **TypeScript**: Follow the existing conventions in the codebase.
 - Keep changes focused — one logical change per PR.
 
 ### Testing Requirements
@@ -33,11 +33,10 @@ Use the format `<your-name>/<short-description>` or `<issue-number>/<short-descr
 All PRs must include tests for new or changed behavior. We follow a testing pyramid:
 
 - **Unit tests**: Pure functions and business logic. Target 80%+ line coverage for new code.
-  - Python app tests: `task app:test:unit`
-  - cdk8s tests: `task cdk8s:test:unit`
+  - `task test:unit`
 - **Integration tests**: Service boundaries, deployment validation.
   - `task test:integration`
-- **Acceptance tests**: End-to-end Kargo deployment validation.
+- **Acceptance tests**: End-to-end deployment validation.
   - `task test:acceptance`
 
 Run the full suite before submitting:
