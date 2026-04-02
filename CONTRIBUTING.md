@@ -35,7 +35,7 @@ All PRs must include tests for new or changed behavior. We follow a testing pyra
 - **Unit tests**: Pure functions and business logic. Target 80%+ line coverage for new code.
   - Python app tests: `task app:test:unit`
   - cdk8s tests: `task cdk8s:test:unit`
-- **Integration tests**: API endpoints, database queries, service boundaries.
+- **Integration tests**: Service boundaries, deployment validation.
   - `task test:integration`
 - **Acceptance tests**: End-to-end Kargo deployment validation.
   - `task test:acceptance`

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-CascadeGuard is a container image security tool built as a FastAPI application with Kubernetes infrastructure managed via cdk8s.
+CascadeGuard is a container image security tool with Kubernetes infrastructure managed via cdk8s.
 
 ## SDLC Process
 
@@ -24,7 +24,7 @@ This is the canonical process for how features move from idea to production.
 ### Testing Pyramid
 - **Static analysis**: linting, type checking, secret scanning (100% of code).
 - **Unit tests**: pure functions, business logic (80%+ line coverage target).
-- **Integration tests**: API endpoints, DB queries, service boundaries.
+- **Integration tests**: service boundaries, deployment validation.
 - **E2E tests**: critical user flows and deployment smoke tests.
 - Every PR must include tests for new/changed behavior. Test failures block merge.
 
@@ -42,12 +42,10 @@ This is the canonical process for how features move from idea to production.
 |---|---|
 | SDLC process | `SDLC.md` |
 | ADRs | `docs/adr/` |
-| API specs | `docs/api/` |
 | Contribution guide | `CONTRIBUTING.md` |
 
 ## Tech Stack
 
-- **Backend**: Python / FastAPI with SQLAlchemy + Alembic (PostgreSQL)
 - **Infrastructure**: cdk8s (TypeScript) for Kubernetes manifests
 - **Testing**: pytest (Python), vitest (TypeScript)
 - **Task runner**: Taskfile (see `Taskfile.yaml`)
@@ -56,10 +54,8 @@ This is the canonical process for how features move from idea to production.
 
 | Directory | Purpose |
 |---|---|
-| `app/` | FastAPI application — API endpoints, models, middleware |
 | `cdk8s/` | Kubernetes manifests (cdk8s TypeScript) |
 | `tests/` | Integration and acceptance tests |
-| `docs/api/` | API specifications |
 
 ## Development
 

@@ -124,8 +124,8 @@ Branch naming: `<identifier>/<short-description>` (e.g., `42/add-vulnerability-s
 |---|---|---|---|
 | Static analysis | Linting, type checking, secret scanning | ruff/eslint, mypy/tsc, gitleaks | 100% of code |
 | Unit tests | Pure functions, business logic, utilities | pytest / vitest | 80%+ line coverage |
-| Integration tests | API endpoints, DB queries, service boundaries | pytest + httpx | Key paths covered |
-| E2E tests | Critical user flows, deployment smoke tests | API-level flows | Top 5 user journeys |
+| Integration tests | Service boundaries, deployment validation | pytest | Key paths covered |
+| E2E tests | Critical user flows, deployment smoke tests | Deployment-level flows | Top 5 user journeys |
 
 ### Testing Requirements
 
@@ -155,7 +155,7 @@ A change is complete when all of the following are true:
 
 CascadeGuard follows [Semantic Versioning](https://semver.org/):
 
-- **MAJOR**: Breaking changes to the public API or behavior.
+- **MAJOR**: Breaking changes to public interfaces or behavior.
 - **MINOR**: New functionality, backwards-compatible.
 - **PATCH**: Bug fixes, backwards-compatible.
 
@@ -180,7 +180,7 @@ Significant technical decisions are recorded as Architecture Decision Records (A
 ### When to Write an ADR
 
 - Introducing a new dependency or technology.
-- Changing the data model or API contract.
+- Changing the data model or public interfaces.
 - Choosing between multiple viable approaches.
 - Any decision that would be hard to reverse later.
 
@@ -225,7 +225,7 @@ CI runs automatically on every PR and push to `main`:
 
 1. **Static analysis**: Linting, type checking, secret scanning.
 2. **Unit tests**: Fast, isolated tests for business logic.
-3. **Integration tests**: API and database interaction tests.
+3. **Integration tests**: Service boundary and deployment validation tests.
 4. **Build verification**: Ensure the application builds and container images are valid.
 
 All checks must pass for a PR to be merge-eligible.
