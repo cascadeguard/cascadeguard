@@ -33,3 +33,6 @@ cdk8s/.venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal project docs (local workspace only)
+.ai/
