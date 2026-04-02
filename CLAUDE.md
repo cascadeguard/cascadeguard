@@ -49,7 +49,6 @@ This is the canonical process for how features move from idea to production.
 
 - **Backend**: Python / FastAPI with SQLAlchemy + Alembic (PostgreSQL)
 - **Infrastructure**: cdk8s (TypeScript) for Kubernetes manifests
-- **SaaS layer**: Under `saas/`
 - **Testing**: pytest (Python), vitest (TypeScript)
 - **Task runner**: Taskfile (see `Taskfile.yaml`)
 
@@ -58,7 +57,6 @@ This is the canonical process for how features move from idea to production.
 | Directory | Purpose |
 |---|---|
 | `app/` | FastAPI application — API endpoints, models, middleware |
-| `saas/` | SaaS platform layer |
 | `cdk8s/` | Kubernetes manifests (cdk8s TypeScript) |
 | `tests/` | Integration and acceptance tests |
 | `docs/api/` | API specifications |
