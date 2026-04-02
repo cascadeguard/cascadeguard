@@ -40,12 +40,10 @@ This is the canonical process for how features move from idea to production.
 
 | Artefact | Path |
 |---|---|
-| PRDs / feature specs | `/workspace/.ai/projects/cascadeguard/prds/` |
-| ADRs | `/workspace/.ai/projects/cascadeguard/adr/` |
-| Strategy docs | `/workspace/.ai/projects/cascadeguard/strategy/` |
-| Technical designs | `/workspace/.ai/projects/cascadeguard/designs/` |
 | SDLC process | `SDLC.md` |
+| ADRs | `docs/adr/` |
 | API specs | `docs/api/` |
+| Contribution guide | `CONTRIBUTING.md` |
 
 ## Tech Stack
 
