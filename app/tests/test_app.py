@@ -11,6 +11,7 @@ import os
 # Add the parent directory to the path so we can import app
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app import ImageFactoryTool
+from storage import YamlBackend
 
 
 class TestImageFactoryTool:
@@ -348,6 +349,46 @@ COPY --from=builder /app/dist /usr/share/nginx/html
         # Runtime data preserved
         assert updated_state["currentDigest"] == "sha256:preserved"
         assert updated_state["lastBuilt"] == "2024-11-01T00:00:00Z"
+
+    def test_default_backend_is_yaml(self, temp_factory):
+        """Test that ImageFactoryTool defaults to YamlBackend."""
+        tool = ImageFactoryTool(temp_factory)
+        assert isinstance(tool.backend, YamlBackend)
+
+    def test_custom_backend_is_used(self, temp_factory):
+        """Test that a custom backend can be injected."""
+        from storage import StorageBackend
+
+        class FakeBackend(StorageBackend):
+            def __init__(self):
+                self.saved_images = []
+                self.saved_base_images = []
+                self.saved_deps = []
+
+            def load_images(self):
+                return [{"name": "fake", "registry": "docker.io", "repository": "fake"}]
+
+            def load_image_state(self, name):
+                return None
+
+            def save_image_state(self, state):
+                self.saved_images.append(state)
+
+            def load_base_image_state(self, name):
+                return None
+
+            def save_base_image_state(self, state):
+                self.saved_base_images.append(state)
+
+            def save_dependency(self, image_name, base_image_name):
+                self.saved_deps.append((image_name, base_image_name))
+
+        backend = FakeBackend()
+        tool = ImageFactoryTool(temp_factory, backend=backend)
+        tool.process()
+
+        assert len(backend.saved_images) == 1
+        assert backend.saved_images[0]["name"] == "fake"
 
 
 class TestGenerateBuildWorkflow:
