@@ -52,7 +52,7 @@ jobs:
         id: check_changes
         working-directory: cascadeguard-state
         run: |
-          if git diff --quiet dist/cdk8s/image-factory.k8s.yaml; then
+          if git diff --quiet dist/cdk8s/cascadeguard.k8s.yaml; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
             echo "Kargo resources are already up to date"
           else
@@ -60,7 +60,7 @@ jobs:
             echo "Synthesis generated new Kargo resources"
             echo ""
             echo "Changes:"
-            git diff --stat dist/cdk8s/image-factory.k8s.yaml
+            git diff --stat dist/cdk8s/cascadeguard.k8s.yaml
           fi
       
       - name: Commit synthesized resources to state repo
@@ -69,7 +69,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add dist/cdk8s/image-factory.k8s.yaml
+          git add dist/cdk8s/cascadeguard.k8s.yaml
           git commit -m "Auto-synth: Regenerate Kargo resources" \
             -m "Synthesized from cascadeguard@${{ github.sha }}" \
             -m "Triggered by: ${{ github.event_name }}"

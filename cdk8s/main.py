@@ -115,5 +115,5 @@ class ImageFactoryChart(Chart):
 # Main entry point
 if __name__ == "__main__":
     app = App(outdir=str(os.getenv("CDK8S_OUTDIR", STATE_DIR / "dist" / "cdk8s")))
-    ImageFactoryChart(app, "image-factory")
+    ImageFactoryChart(app, "cascadeguard")
     app.synth()
