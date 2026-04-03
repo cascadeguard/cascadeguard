@@ -44,4 +44,4 @@ tasks:
   deploy:
     desc: "Apply generated manifests to cluster"
     cmds:
-      - kubectl apply -f dist/cdk8s/image-factory.k8s.yaml
+      - kubectl apply -f dist/cdk8s/cascadeguard.k8s.yaml

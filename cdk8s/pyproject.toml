@@ -1,5 +1,5 @@
 [project]
-name = "image-factory-cdk8s"
+name = "cascadeguard-cdk8s"
 version = "0.1.0"
 requires-python = ">=3.10,<3.15"
 dependencies = [

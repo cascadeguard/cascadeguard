@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the cdk8s image factory chart."""
+"""Unit tests for the cdk8s CascadeGuard chart."""
 import pytest
 import yaml
 import tempfile
@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from constructs import Construct
 from cdk8s import App
-from main import ImageFactoryChart
+from main import CascadeGuardChart
 from lib.data import load_yaml_dir
 from lib.warehouses import _build_git_subscription_config
 from hypothesis import given, strategies as st, settings, HealthCheck
@@ -82,8 +82,8 @@ class TestLoadYamlDir:
             assert 'test' not in names
 
 
-class TestImageFactoryChart:
-    """Test suite for ImageFactoryChart."""
+class TestCascadeGuardChart:
+    """Test suite for CascadeGuardChart."""
     
     @pytest.fixture
     def temp_structure(self):
@@ -92,13 +92,13 @@ class TestImageFactoryChart:
             root = Path(tmpdir)
             
             # Create directory structure
-            images_dir = root / "image-factory" / "state" / "images"
-            base_images_dir = root / "image-factory" / "state" / "base-images"
+            images_dir = root / "cascadeguard" / "state" / "images"
+            base_images_dir = root / "cascadeguard" / "state" / "base-images"
             images_dir.mkdir(parents=True)
             base_images_dir.mkdir(parents=True)
             
             # Create images.yaml
-            images_yaml = root / "image-factory" / "images.yaml"
+            images_yaml = root / "cascadeguard" / "images.yaml"
             images_yaml.write_text(yaml.dump([
                 {
                     'name': 'backstage',
@@ -112,7 +112,7 @@ class TestImageFactoryChart:
     def test_chart_creates_warehouses_from_base_images(self, temp_structure, monkeypatch):
         """Test that chart creates warehouses for base images with proper config."""
         # Create base image state file
-        base_image_file = temp_structure / "image-factory" / "state" / "base-images" / "node-22.yaml"
+        base_image_file = temp_structure / "cascadeguard" / "state" / "base-images" / "node-22.yaml"
         base_image_file.write_text(yaml.dump({
             'name': 'node-22',
             'repoURL': 'docker.io/library/node',
@@ -122,15 +122,15 @@ class TestImageFactoryChart:
         
         # Mock the file paths in main.py
         import main
-        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "image-factory" / "images.yaml")
-        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "images")
-        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "base-images")
+        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "cascadeguard" / "images.yaml")
+        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "images")
+        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "base-images")
         
         # Create app with explicit outdir
         output_dir = Path(__file__).parent / "tests" / ".output"
         output_dir.mkdir(parents=True, exist_ok=True)
         app = App(outdir=str(output_dir))
-        chart = ImageFactoryChart(app, "test")
+        chart = CascadeGuardChart(app, "test")
         
         # Synthesize to YAML using helper function
         results = synth_chart_to_yaml(app)
@@ -161,7 +161,7 @@ class TestImageFactoryChart:
     def test_chart_skips_images_without_warehouse_config(self, temp_structure, monkeypatch):
         """Test that images without repoURL/allowTags are skipped."""
         # Create image state file without warehouse config
-        image_file = temp_structure / "image-factory" / "state" / "images" / "backstage.yaml"
+        image_file = temp_structure / "cascadeguard" / "state" / "images" / "backstage.yaml"
         image_file.write_text(yaml.dump({
             'name': 'backstage',
             'enrollment': {
@@ -173,15 +173,15 @@ class TestImageFactoryChart:
         
         # Mock the file paths
         import main
-        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "image-factory" / "images.yaml")
-        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "images")
-        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "base-images")
+        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "cascadeguard" / "images.yaml")
+        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "images")
+        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "base-images")
         
         # Create app and chart
         output_dir = Path(__file__).parent / "tests" / ".output"
         output_dir.mkdir(parents=True, exist_ok=True)
         app = App(outdir=str(output_dir))
-        chart = ImageFactoryChart(app, "test")
+        chart = CascadeGuardChart(app, "test")
         
         # Synthesize to YAML using helper function
         results = synth_chart_to_yaml(app)
@@ -201,7 +201,7 @@ class TestImageFactoryChart:
     def test_chart_merges_images_yaml_with_state(self, temp_structure, monkeypatch):
         """Test that images.yaml takes precedence over state files."""
         # Create state file with old config
-        image_file = temp_structure / "image-factory" / "state" / "images" / "backstage.yaml"
+        image_file = temp_structure / "cascadeguard" / "state" / "images" / "backstage.yaml"
         image_file.write_text(yaml.dump({
             'name': 'backstage',
             'repoURL': 'docker.io/old/backstage',
@@ -210,7 +210,7 @@ class TestImageFactoryChart:
         }))
         
         # Update images.yaml with new config
-        images_yaml = temp_structure / "image-factory" / "images.yaml"
+        images_yaml = temp_structure / "cascadeguard" / "images.yaml"
         images_yaml.write_text(yaml.dump([
             {
                 'name': 'backstage',
@@ -222,15 +222,15 @@ class TestImageFactoryChart:
         
         # Mock the file paths
         import main
-        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "image-factory" / "images.yaml")
-        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "images")
-        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "base-images")
+        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "cascadeguard" / "images.yaml")
+        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "images")
+        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "base-images")
         
         # Create app and chart
         output_dir = Path(__file__).parent / "tests" / ".output"
         output_dir.mkdir(parents=True, exist_ok=True)
         app = App(outdir=str(output_dir))
-        chart = ImageFactoryChart(app, "test")
+        chart = CascadeGuardChart(app, "test")
         
         # Synthesize to YAML using helper function
         results = synth_chart_to_yaml(app)
@@ -257,7 +257,7 @@ class TestImageFactoryChart:
         """Test that chart creates warehouses for multiple images."""
         # Create multiple base image state files
         for i in range(3):
-            base_file = temp_structure / "image-factory" / "state" / "base-images" / f"image-{i}.yaml"
+            base_file = temp_structure / "cascadeguard" / "state" / "base-images" / f"image-{i}.yaml"
             base_file.write_text(yaml.dump({
                 'name': f'image-{i}',
                 'repoURL': f'docker.io/library/image-{i}',
@@ -267,15 +267,15 @@ class TestImageFactoryChart:
         
         # Mock the file paths
         import main
-        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "image-factory" / "images.yaml")
-        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "images")
-        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "image-factory" / "state" / "base-images")
+        monkeypatch.setattr(main, 'IMAGES_YAML', temp_structure / "cascadeguard" / "images.yaml")
+        monkeypatch.setattr(main, 'STATE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "images")
+        monkeypatch.setattr(main, 'STATE_BASE_IMAGES_DIR', temp_structure / "cascadeguard" / "state" / "base-images")
         
         # Create app and chart
         output_dir = Path(__file__).parent / "tests" / ".output"
         output_dir.mkdir(parents=True, exist_ok=True)
         app = App(outdir=str(output_dir))
-        chart = ImageFactoryChart(app, "test")
+        chart = CascadeGuardChart(app, "test")
         
         # Synthesize to YAML using helper function
         results = synth_chart_to_yaml(app)
@@ -313,12 +313,12 @@ class TestGitSubscriptionConfiguration:
         """
         Property test for git subscription configuration.
         
-        **Feature: image-factory, Property 17: Git subscription configuration for verification re-triggering**
+        **Feature: cascadeguard, Property 17: Git subscription configuration for verification re-triggering**
         **Validates: Requirements 17.1, 17.2, 17.3, 17.7**
         
         For any valid source configuration with provider, repo, branch, and dockerfile,
         the git subscription configuration should include the correct repository URL,
-        branch, include paths for both app directory and image-factory directory,
+        branch, include paths for both app directory and cascadeguard directory,
         and proper batching configuration.
         """
         source = {
@@ -342,9 +342,9 @@ class TestGitSubscriptionConfiguration:
         # Property 3: Branch should match input
         assert config['branch'] == branch
         
-        # Property 4: Should always include image-factory directory
+        # Property 4: Should always include cascadeguard directory
         assert 'includePaths' in config
-        assert 'image-factory/' in config['includePaths']
+        assert 'cascadeguard/' in config['includePaths']
         
         # Property 5: Should include app-specific directory based on dockerfile
         if dockerfile.startswith('apps/'):

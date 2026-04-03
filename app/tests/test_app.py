@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the image factory tool."""
+"""Unit tests for the CascadeGuard tool."""
 
 import pytest
 import yaml
@@ -10,15 +10,15 @@ import os
 
 # Add the parent directory to the path so we can import app
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from app import ImageFactoryTool
+from app import CascadeGuardTool
 
 
-class TestImageFactoryTool:
-    """Test suite for ImageFactoryTool."""
+class TestCascadeGuardTool:
+    """Test suite for CascadeGuardTool."""
 
     @pytest.fixture
     def temp_factory(self):
-        """Create a temporary image factory directory structure."""
+        """Create a temporary CascadeGuard directory structure."""
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
 
@@ -30,7 +30,7 @@ class TestImageFactoryTool:
 
     def test_normalize_base_image_name(self, temp_factory):
         """Test base image name normalization."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         assert (
             tool.normalize_base_image_name("node:22-bookworm-slim")
@@ -47,7 +47,7 @@ class TestImageFactoryTool:
 
     def test_parse_image_reference(self, temp_factory):
         """Test parsing image references."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         # Official Docker image
         result = tool.parse_image_reference("node:22-bookworm-slim")
@@ -68,7 +68,7 @@ class TestImageFactoryTool:
 
     def test_parse_dockerfile_multi_stage(self, temp_factory):
         """Test extracting all base images from multi-stage Dockerfile."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         # Create a multi-stage Dockerfile
         dockerfile = temp_factory / "Dockerfile"
@@ -90,7 +90,7 @@ WORKDIR /app
 
     def test_parse_dockerfile_deduplication(self, temp_factory):
         """Test deduplication of repeated base images in same Dockerfile."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         # Create a Dockerfile with duplicate FROM statements
         dockerfile = temp_factory / "Dockerfile"
@@ -130,7 +130,7 @@ COPY --from=builder /app/dist ./dist
 
     def test_parse_dockerfile_stage_references(self, temp_factory):
         """Test that stage references are not treated as base images."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         # Create a Dockerfile with stage references
         dockerfile = temp_factory / "Dockerfile"
@@ -152,7 +152,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
     def test_generate_base_image_state(self, temp_factory):
         """Test generating base image state."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         state = tool.generate_base_image_state("node:22-bookworm-slim")
 
@@ -166,7 +166,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
     def test_generate_image_state_managed(self, temp_factory):
         """Test generating state for a managed image."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         image_config = {
             "name": "backstage",
@@ -192,7 +192,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
     def test_generate_image_state_external(self, temp_factory):
         """Test generating state for an external image."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         image_config = {
             "name": "postgres",
@@ -213,7 +213,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
     def test_merge_state_preserves_runtime_data(self, temp_factory):
         """Test that merge preserves runtime data while updating config."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         existing = {
             "name": "backstage",
@@ -244,7 +244,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
     def test_process_creates_state_files(self, temp_factory):
         """Test full processing creates expected state files."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         # Create images.yaml
         images_yaml = temp_factory / "images.yaml"
@@ -296,7 +296,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
     def test_process_updates_existing_state(self, temp_factory):
         """Test that processing updates existing state files correctly."""
-        tool = ImageFactoryTool(temp_factory)
+        tool = CascadeGuardTool(temp_factory)
 
         # Create initial state file with runtime data
         image_state_file = temp_factory / "state" / "images" / "test-image.yaml"
@@ -429,10 +429,10 @@ class TestGenerateBuildWorkflow:
         assert "sparse-checkout: local/test-app" in content
         # Patch applied
         assert "Apply patch Dockerfile.patch" in content
-        assert "git apply _image-factory/local/test-app/Dockerfile.patch" in content
+        assert "git apply _cascadeguard/local/test-app/Dockerfile.patch" in content
         # Version file read
         assert "Read version" in content
-        assert "cat _image-factory/local/test-app/VERSION" in content
+        assert "cat _cascadeguard/local/test-app/VERSION" in content
         # Resolve tag step with suffix support
         assert "Resolve tag" in content
         assert "inputs.suffix" in content
@@ -497,8 +497,8 @@ class TestGenerateBuildWorkflow:
         assert "Resolve tag" in content
         assert "Bump version" in content
         assert "contents: write" in content
-        # Bump step works directly (no _image-factory prefix)
-        assert "_image-factory" not in content
+        # Bump step works directly (no _cascadeguard prefix)
+        assert "_cascadeguard" not in content
 
     def test_skips_when_source_has_workflow(self, output_dir):
         """Test that workflow generation is skipped when source.workflow is set."""

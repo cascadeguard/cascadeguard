@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-CDK8s app for generating Kargo resources for the Image Factory.
+CDK8s app for generating Kargo resources for CascadeGuard.
 
 This app reads images.yaml and state files, then generates:
 - Warehouses for all images (managed, base, and external)
@@ -37,14 +37,14 @@ logging.basicConfig(
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent
-IMAGE_FACTORY_DIR = SCRIPT_DIR.parent
+CASCADEGUARD_DIR = SCRIPT_DIR.parent
 
 # State directory can be overridden via environment variable
-# Default to ../image-factory-state for local development
+# Default to ../cascadeguard-state for local development
 import os
 
 STATE_DIR = Path(
-    os.getenv("IMAGE_FACTORY_STATE_DIR", SCRIPT_DIR / "../../image-factory-state")
+    os.getenv("CASCADEGUARD_STATE_DIR", SCRIPT_DIR / "../../cascadeguard-state")
 )
 STATE_IMAGES_DIR = STATE_DIR / "images"
 STATE_BASE_IMAGES_DIR = STATE_DIR / "base-images"
@@ -52,11 +52,11 @@ STATE_BASE_IMAGES_DIR = STATE_DIR / "base-images"
 # images.yaml can be overridden via environment variable
 IMAGES_YAML = Path(os.getenv("IMAGES_YAML", STATE_DIR / "images.yaml"))
 
-NAMESPACE = "image-factory-kargo"
+NAMESPACE = "cascadeguard-kargo"
 
 
-class ImageFactoryChart(Chart):
-    """CDK8s Chart for Image Factory Kargo resources."""
+class CascadeGuardChart(Chart):
+    """CDK8s Chart for CascadeGuard Kargo resources."""
 
     def __init__(self, scope: Construct, id: str):
         super().__init__(scope, id, namespace=NAMESPACE)
@@ -115,5 +115,5 @@ class ImageFactoryChart(Chart):
 # Main entry point
 if __name__ == "__main__":
     app = App(outdir=str(os.getenv("CDK8S_OUTDIR", STATE_DIR / "dist" / "cdk8s")))
-    ImageFactoryChart(app, "image-factory")
+    CascadeGuardChart(app, "cascadeguard")
     app.synth()
