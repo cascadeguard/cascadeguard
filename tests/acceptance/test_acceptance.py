@@ -97,10 +97,12 @@ class TestGenerateStateCLI:
         images_dir = workspace['output_dir'] / "images"
         assert (images_dir / "backstage.yaml").exists(), "backstage state file not created"
 
-        # Verify base image state files were created (includes external images without source)
+        # Verify base image state files were created for images.yaml entries without source
         base_dir = workspace['output_dir'] / "base-images"
-        assert (base_dir / "node-22-bookworm-slim.yaml").exists(), "node base image state not created"
         assert (base_dir / "postgres.yaml").exists(), "postgres state file not created"
+
+        # Discovered base images from Dockerfile parsing are referenced by name
+        # in the app image's baseImages field, not as separate state files
 
         # Verify backstage state content
         with open(images_dir / "backstage.yaml") as f:
