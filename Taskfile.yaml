@@ -133,8 +133,34 @@ tasks:
             .venv/bin/python -m pytest test_integration.py -v
           fi
       
+  test:acceptance:setup:
+    desc: "Set up acceptance test environment"
+    cmds:
+      - task: setup
+      - cmd: |
+          echo "Installing acceptance test dependencies..."
+          if [ -n "$CI" ]; then
+            pip install -e "tests/acceptance/.[dev]"
+          else
+            echo "Using existing virtual environments"
+          fi
+        silent: true
+
   test:acceptance:
-    desc: "Run acceptance tests for CascadeGuard"
+    desc: "Run acceptance tests for CascadeGuard (CLI + CDK8s synth)"
+    dir: .
+    cmds:
+      - cmd: echo "🧪 Running CascadeGuard acceptance tests..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            python -m pytest tests/acceptance/test_acceptance.py -v
+          else
+            app/.venv/bin/python -m pytest tests/acceptance/test_acceptance.py -v
+          fi
+
+  test:acceptance:kargo:
+    desc: "Run Kargo live acceptance tests (requires K8s cluster)"
     dir: .
     cmds:
       - cmd: echo "🧪 Running Kargo acceptance tests..."
