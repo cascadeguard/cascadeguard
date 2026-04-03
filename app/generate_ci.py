@@ -2,10 +2,10 @@
 """
 Generate CI/CD pipeline files from images.yaml.
 
-The target CI platform is controlled by cascadeguard.yaml (in the same
-directory as images.yaml) or by the --platform flag:
+The target CI platform is controlled by .cascadeguard.yaml (in the repo
+root, alongside images.yaml) or by the --platform flag:
 
-  cascadeguard.yaml:
+  .cascadeguard.yaml:
     ci:
       platform: github   # default; also accepts: gitlab (future)
 
@@ -42,8 +42,8 @@ PLANNED_PLATFORMS = ("gitlab",)
 
 
 def load_config(output_dir: Path) -> dict:
-    """Load cascadeguard.yaml from the repo root, returning {} if absent."""
-    config_path = output_dir / "cascadeguard.yaml"
+    """Load .cascadeguard.yaml from the repo root, returning {} if absent."""
+    config_path = output_dir / ".cascadeguard.yaml"
     if config_path.exists():
         with open(config_path) as f:
             return yaml.safe_load(f) or {}
@@ -545,13 +545,13 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         default="/workspace",
-        help="Repo root — cascadeguard.yaml is read from here; output written relative to here (default: /workspace)",
+        help="Repo root — .cascadeguard.yaml is read from here; output written relative to here (default: /workspace)",
     )
     parser.add_argument(
         "--platform",
         default=None,
         help=f"CI platform to target ({', '.join(SUPPORTED_PLATFORMS)}). "
-             f"Overrides cascadeguard.yaml ci.platform. Default: github.",
+             f"Overrides .cascadeguard.yaml ci.platform. Default: github.",
     )
     parser.add_argument(
         "--dry-run",

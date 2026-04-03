@@ -232,12 +232,12 @@ class TestLoadConfig:
         assert load_config(tmp_path) == {}
 
     def test_loads_config_from_cascadeguard_yaml(self, tmp_path):
-        (tmp_path / "cascadeguard.yaml").write_text("ci:\n  platform: github\n")
+        (tmp_path / ".cascadeguard.yaml").write_text("ci:\n  platform: github\n")
         config = load_config(tmp_path)
         assert config == {"ci": {"platform": "github"}}
 
     def test_returns_empty_dict_for_empty_config_file(self, tmp_path):
-        (tmp_path / "cascadeguard.yaml").write_text("")
+        (tmp_path / ".cascadeguard.yaml").write_text("")
         assert load_config(tmp_path) == {}
 
 
@@ -271,7 +271,7 @@ class TestGenerateCiPlatform:
     def test_generates_github_from_cascadeguard_yaml(self, tmp_path):
         images_yaml = tmp_path / "images.yaml"
         images_yaml.write_text(yaml.dump(SAMPLE_IMAGES))
-        (tmp_path / "cascadeguard.yaml").write_text("ci:\n  platform: github\n")
+        (tmp_path / ".cascadeguard.yaml").write_text("ci:\n  platform: github\n")
 
         generate_ci(images_yaml_path=images_yaml, output_dir=tmp_path)
 
