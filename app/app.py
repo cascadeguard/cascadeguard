@@ -449,6 +449,7 @@ class CascadeGuardTool:
         logger.info("Processing complete!")
 
 
+<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # Provider interfaces
 # ---------------------------------------------------------------------------
@@ -1002,6 +1003,36 @@ def main() -> int:
     }
 
     return commands[args.command](args)
+=======
+def main():
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='CascadeGuard Dockerfile Analysis Tool')
+    parser.add_argument('--image', required=True, help='Image name')
+    parser.add_argument('--tag', required=True, help='Image tag')
+    parser.add_argument('--digest', required=True, help='Image digest')
+    parser.add_argument('--dockerfile', required=True, help='Path to Dockerfile')
+    parser.add_argument('--source-repo', required=True, help='Source repository')
+    parser.add_argument('--source-provider', required=True, help='Source provider (github/gitlab)')
+    parser.add_argument('--git-repo', required=True, help='Git repository URL')
+    parser.add_argument('--git-branch', required=True, help='Git branch')
+    parser.add_argument('--cascadeguard-dir', default='./cascadeguard', help='Path to cascadeguard directory')
+
+    args = parser.parse_args()
+
+    logger.info(f"Analyzing {args.image}:{args.tag}")
+    logger.info(f"Dockerfile: {args.dockerfile}")
+    logger.info(f"Source: {args.source_provider}/{args.source_repo}")
+
+    # Determine root directory
+    root_dir = Path(args.cascadeguard_dir)
+
+    tool = CascadeGuardTool(root_dir)
+    tool.process()
+    
+    logger.info("Analysis complete!")
+>>>>>>> 8e21385 (feat: rename image-factory identifiers to cascadeguard)
 
 
 if __name__ == "__main__":
