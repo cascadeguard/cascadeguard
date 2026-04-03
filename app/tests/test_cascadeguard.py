@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for cascadeguard.py task mode CLI."""
+"""Unit tests for CascadeGuard task mode CLI commands."""
 
 import json
 import os
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from cascadeguard import (
+from app import (
     ArgoCDProvider,
     GitHubActionsProvider,
     build_parser,
@@ -468,7 +468,7 @@ class TestArgoCDProvider:
 
 class TestCmdBuildDeployTest:
     def test_build_no_token(self, tmp_path):
-        from cascadeguard import cmd_build
+        from app import cmd_build
 
         with patch.dict(os.environ, {}, clear=True):
             rc = cmd_build(
@@ -477,13 +477,13 @@ class TestCmdBuildDeployTest:
         assert rc == 1
 
     def test_build_no_repo(self, tmp_path):
-        from cascadeguard import cmd_build
+        from app import cmd_build
 
         rc = cmd_build(_args(image="myapp", github_token="tok", repo=None))
         assert rc == 1
 
     def test_deploy_no_token(self):
-        from cascadeguard import cmd_deploy
+        from app import cmd_deploy
 
         with patch.dict(os.environ, {}, clear=True):
             rc = cmd_deploy(
@@ -497,7 +497,7 @@ class TestCmdBuildDeployTest:
         assert rc == 1
 
     def test_deploy_no_server(self):
-        from cascadeguard import cmd_deploy
+        from app import cmd_deploy
 
         rc = cmd_deploy(
             _args(image="myapp", argocd_token="tok", argocd_server=None, app="myapp")
@@ -505,7 +505,7 @@ class TestCmdBuildDeployTest:
         assert rc == 1
 
     def test_deploy_no_app(self):
-        from cascadeguard import cmd_deploy
+        from app import cmd_deploy
 
         rc = cmd_deploy(
             _args(
