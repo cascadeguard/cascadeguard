@@ -93,14 +93,14 @@ class TestGenerateStateCLI:
 
         assert result.returncode == 0, f"CLI failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
-        # Verify image state files were created
+        # Verify managed image state files were created
         images_dir = workspace['output_dir'] / "images"
         assert (images_dir / "backstage.yaml").exists(), "backstage state file not created"
-        assert (images_dir / "postgres.yaml").exists(), "postgres state file not created"
 
-        # Verify base image state files were created
+        # Verify base image state files were created (includes external images without source)
         base_dir = workspace['output_dir'] / "base-images"
         assert (base_dir / "node-22-bookworm-slim.yaml").exists(), "node base image state not created"
+        assert (base_dir / "postgres.yaml").exists(), "postgres state file not created"
 
         # Verify backstage state content
         with open(images_dir / "backstage.yaml") as f:
@@ -109,8 +109,8 @@ class TestGenerateStateCLI:
         assert "node-22-bookworm-slim" in content
         assert "CascadeGuard" in content
 
-        # Verify postgres (external) state content
-        with open(images_dir / "postgres.yaml") as f:
+        # Verify postgres (external, no source) state content
+        with open(base_dir / "postgres.yaml") as f:
             data = yaml.safe_load(f)
         assert data['name'] == 'postgres'
 
