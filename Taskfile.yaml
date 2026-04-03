@@ -181,9 +181,9 @@ tasks:
         silent: true
       - cmd: |
           if [ -n "$CI" ]; then
-            python -m pytest tests/test_app.py -v
+            python -m pytest tests/test_app.py tests/test_cascadeguard.py -v
           else
-            .venv/bin/python -m pytest tests/test_app.py -v
+            .venv/bin/python -m pytest tests/test_app.py tests/test_cascadeguard.py -v
           fi
 
   cdk8s:test:unit:
