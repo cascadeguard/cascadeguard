@@ -96,7 +96,7 @@ def build_image_workflow(images: list) -> str:
 # https://github.com/cascadeguard/cascadeguard
 name: build-image
 
-on:
+'on':
   workflow_call:
     inputs:
       name:
@@ -222,7 +222,7 @@ def ci_workflow(images: list) -> str:
 # https://github.com/cascadeguard/cascadeguard
 name: CI
 
-on:
+'on':
   push:
     branches: [main]
     paths:
@@ -283,7 +283,7 @@ def scheduled_scan_workflow(images: list) -> str:
 # https://github.com/cascadeguard/cascadeguard
 name: Scheduled CVE Scan
 
-on:
+'on':
   schedule:
     # 02:00 UTC every day
     - cron: "0 2 * * *"
@@ -381,7 +381,7 @@ def release_workflow(images: list) -> str:
 # https://github.com/cascadeguard/cascadeguard
 name: Release
 
-on:
+'on':
   push:
     tags:
       - "v*"

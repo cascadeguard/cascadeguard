@@ -219,8 +219,13 @@ class TestGenerateCi:
         images_yaml.write_text(yaml.dump(images_v2))
         generate_ci(images_yaml_path=images_yaml, output_dir=tmp_path)
 
+        # build-image.yaml is a reusable workflow_call template — no matrix, no image names.
+        # Image names appear only in the matrix callers.
+        matrix_callers = {"ci.yaml", "scheduled-scan.yaml", "release.yaml"}
         workflows_dir = tmp_path / ".github" / "workflows"
         for wf_file in workflows_dir.iterdir():
+            if wf_file.name not in matrix_callers:
+                continue
             content = wf_file.read_text()
             assert "alpine-3.20" in content, (
                 f"{wf_file.name} does not contain newly added image 'alpine-3.20'"

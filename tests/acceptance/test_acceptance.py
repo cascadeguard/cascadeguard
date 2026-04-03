@@ -519,7 +519,12 @@ class TestGenerateCICLI:
         assert result.returncode == 0, result.stderr
 
         workflows_dir = workspace / ".github" / "workflows"
+        # build-image.yaml is a reusable template (workflow_call) with no matrix —
+        # image names live only in the callers: ci.yaml, scheduled-scan.yaml, release.yaml
+        matrix_callers = {"ci.yaml", "scheduled-scan.yaml", "release.yaml"}
         for wf_file in workflows_dir.iterdir():
+            if wf_file.name not in matrix_callers:
+                continue
             content = wf_file.read_text()
             assert "alpine-3.20" in content, (
                 f"Newly added image 'alpine-3.20' not found in {wf_file.name} after re-generation"
