@@ -54,7 +54,7 @@ An issue is ready to build when:
 
 ### Done
 
-A change is done when it is merged to `main` with all checks passing.
+A change is done when it is merged to `main` with all checks passing. The originating GitHub issue is closed with a comment summarizing the resolution and linking to the merged PR.
 
 ## 2. Issue Management
 
@@ -74,6 +74,49 @@ A change is done when it is merged to `main` with all checks passing.
 | `docs` | Documentation only |
 | `tech-debt` | Refactoring or cleanup with no user-facing change |
 | `critical` / `high` / `medium` / `low` | Priority |
+
+### Triage Labels
+
+These labels track an issue's progress through the triage pipeline:
+
+| Label | Meaning |
+|---|---|
+| `triaged` | Issue has been reviewed and categorized |
+| `inscope` | Fits the current roadmap |
+| `next` | Top prioritized items ready for CTO review |
+| `cto-reviewed` | CTO has added technical assessment |
+| `ready` | Board-approved, can be scheduled for implementation |
+| `needs-info` | Awaiting clarification from the reporter |
+
+### GitHub Issue Triage Lifecycle
+
+GitHub is the source of truth for issue state. Issues stay in GitHub until approved for implementation. The full lifecycle is:
+
+```
+New Issue → Triaged → In Scope → Next → CTO Reviewed → Ready → Paperclip Issue → Implementation → PR Merged → GitHub Issue Closed
+```
+
+1. **New issue filed** — community member or maintainer opens a GitHub issue.
+2. **Triage** — the daily triage process reviews new issues:
+   - Categorize (bug, feature, question, security, docs).
+   - If in scope: label `triaged` + `inscope`.
+   - If out of scope: move to GitHub Discussions with a comment explaining why.
+   - If unclear: label `triaged` + `needs-info`, comment asking for clarification.
+3. **Prioritization** — `inscope` issues are ranked. Top items receive the `next` label.
+4. **CTO review** — `next` items get a technical assessment comment and the `cto-reviewed` label.
+5. **Board approval** — board reviews the daily summary and approves items. Approved items receive the `ready` label. Nothing proceeds without board sign-off.
+6. **Paperclip handoff** — a Paperclip issue is created only for `ready`-labeled items, assigned to the relevant engineer.
+7. **Implementation** — normal feature lifecycle (branch, code, tests, PR).
+8. **Closing** — when the PR is merged, the corresponding GitHub issue is closed **with a comment** summarizing what was done and linking to the PR. This ensures the community sees the resolution.
+
+### Closing GitHub Issues
+
+When closing a GitHub issue after implementation:
+
+- Always add a closing comment before or alongside closing the issue.
+- The comment should reference the PR that resolved it (e.g., "Resolved in PR #27").
+- Briefly describe what changed and any follow-up actions for users.
+- Use `state_reason: completed` when the issue is resolved, or `not_planned` when moved to Discussions.
 
 ### Milestones
 
@@ -148,6 +191,7 @@ A change is complete when all of the following are true:
 - [ ] Documentation updated if user-facing behavior changed.
 - [ ] ADR written if an architectural decision was made.
 - [ ] No known regressions in existing functionality.
+- [ ] Originating GitHub issue closed with a summary comment linking to the PR.
 
 ## 6. Release Process
 
