@@ -1,0 +1,18 @@
+# CascadeGuard acceptance-test fixture — github-actions
+#
+# A minimal but representative images.yaml used to verify that
+# `cascadeguard generate-ci` (platform: github) produces valid
+# GitHub Actions workflow files.
+# Two images are intentionally included to exercise the matrix strategy.
+
+- name: python-3.12-slim
+  dockerfile: images/python/3.12/Dockerfile
+  registry: ghcr.io/acme
+  image: python
+  tag: 3.12-slim
+
+- name: node-20-slim
+  dockerfile: images/node/20/Dockerfile
+  registry: ghcr.io/acme
+  image: node
+  tag: 20-slim

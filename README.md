@@ -50,6 +50,7 @@ Then run:
 task generate          # Generate state files from images.yaml
 task synth             # Generate Kargo manifests
 task generate-and-synth  # Both in sequence
+task generate-ci       # Generate GitHub Actions workflow files
 task status            # View generated files
 ```
 
@@ -65,6 +66,7 @@ Mount your state repo at `/workspace`:
 docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate
 docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 synth
 docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate-and-synth
+docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate-ci
 ```
 
 ## Development
@@ -90,6 +92,28 @@ task test:acceptance     # Kargo acceptance tests (requires cluster)
 docker build -t cascadeguard:dev .
 docker run --rm -v $(pwd)/path/to/state:/workspace cascadeguard:dev generate
 ```
+
+## Generating CI/CD Pipelines
+
+`cascadeguard generate-ci` reads `images.yaml` and emits four GitHub Actions workflow files under `.github/workflows/`:
+
+| File | Trigger | Purpose |
+|------|---------|---------|
+| `build-image.yaml` | `workflow_call` | Reusable single-image build, scan (Grype + Trivy), SBOM, and Cosign signing |
+| `ci.yaml` | `push` to `main`, `pull_request` | Matrix build of all images; pushes and signs on merge to main |
+| `scheduled-scan.yaml` | Nightly cron + `workflow_dispatch` | Re-scans all published images; opens a GitHub Issue on new CVEs |
+| `release.yaml` | Tag push (`v*`) | Builds, signs, and pushes all images; creates a GitHub Release with changelog |
+
+### Quick start
+
+```bash
+# Inside your state repo (e.g. cascadeguard-open-secure-images):
+task generate-ci
+# or directly via Docker:
+docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate-ci
+```
+
+Commit the generated files. Adding a new image to `images.yaml` and re-running `generate-ci` will automatically include it in every pipeline.
 
 ## Image Types
 

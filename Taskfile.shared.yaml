@@ -31,6 +31,11 @@ tasks:
       - task: generate
       - task: synth
 
+  generate-ci:
+    desc: "Generate GitHub Actions workflow files from images.yaml"
+    cmds:
+      - docker run --rm -v "$(pwd):/workspace" {{.CASCADEGUARD_IMAGE}} generate-ci
+
   clean:
     desc: "Clean generated files (base-images/, images/, dist/)"
     cmds:

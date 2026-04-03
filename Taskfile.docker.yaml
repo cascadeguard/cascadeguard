@@ -24,6 +24,11 @@ tasks:
       - task: generate
       - task: synth
 
+  generate-ci:
+    desc: "Generate GitHub Actions workflow files from /workspace/images.yaml"
+    cmds:
+      - /app/.venv/bin/python /app/generate_ci.py --images-yaml /workspace/images.yaml --output-dir /workspace
+
   clean:
     desc: "Clean generated files from /workspace"
     cmds:
@@ -38,3 +43,6 @@ tasks:
         echo ""
         echo "=== Generated Manifests ==="
         ls -lh /workspace/dist/cdk8s/ 2>/dev/null || echo "No manifests generated"
+        echo ""
+        echo "=== Generated CI Workflows ==="
+        ls -lh /workspace/.github/workflows/ 2>/dev/null || echo "No CI workflows generated"
