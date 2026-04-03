@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Integration test for image factory tool and cdk8s app.
+Integration test for CascadeGuard tool and cdk8s app.
 
 This test verifies that:
 1. The tool generates state files from images.yaml
@@ -13,9 +13,9 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-# Add the image-factory/app directory to the path to import the tool
+# Add the cascadeguard/app directory to the path to import the tool
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "app"))
-from app import ImageFactoryTool
+from app import CascadeGuardTool
 
 
 class TestIntegration:
@@ -28,12 +28,12 @@ class TestIntegration:
             root = Path(tmpdir)
             
             # Create directory structure
-            image_factory = root / "image-factory"
-            image_factory.mkdir()
-            (image_factory / "state" / "images").mkdir(parents=True)
-            (image_factory / "state" / "base-images").mkdir(parents=True)
+            cascadeguard = root / "cascadeguard"
+            cascadeguard.mkdir()
+            (cascadeguard / "state" / "images").mkdir(parents=True)
+            (cascadeguard / "state" / "base-images").mkdir(parents=True)
             
-            cdk8s_dir = root / "cdk8s" / "image-factory"
+            cdk8s_dir = root / "cdk8s" / "cascadeguard"
             cdk8s_dir.mkdir(parents=True)
             
             # Create source code directory
@@ -42,7 +42,7 @@ class TestIntegration:
             
             yield {
                 'root': root,
-                'image_factory': image_factory,
+                'cascadeguard': cascadeguard,
                 'cdk8s': cdk8s_dir,
                 'apps': apps_dir
             }
@@ -50,7 +50,7 @@ class TestIntegration:
     def test_end_to_end_managed_image(self, workspace):
         """Test complete workflow for a managed image."""
         # Step 1: Create images.yaml with a managed image
-        images_yaml = workspace['image_factory'] / "images.yaml"
+        images_yaml = workspace['cascadeguard'] / "images.yaml"
         images_yaml.write_text(yaml.dump([
             {
                 'name': 'backstage',
@@ -68,7 +68,7 @@ class TestIntegration:
             }
         ]))
         
-        # Create Dockerfile in the root (parent of image-factory)
+        # Create Dockerfile in the root (parent of cascadeguard)
         dockerfile = workspace['root'] / "backstage" / "app" / "Dockerfile"
         dockerfile.parent.mkdir(parents=True, exist_ok=True)
         dockerfile.write_text("""
@@ -79,14 +79,14 @@ RUN npm install
 """)
         
         # Step 2: Run the tool to generate state files
-        tool = ImageFactoryTool(workspace['image_factory'])
+        tool = CascadeGuardTool(workspace['cascadeguard'])
         tool.process()
         
         # Step 3: Verify state files were created
-        backstage_state = workspace['image_factory'] / "state" / "images" / "backstage.yaml"
+        backstage_state = workspace['cascadeguard'] / "state" / "images" / "backstage.yaml"
         assert backstage_state.exists(), "backstage state file not created"
         
-        node_state = workspace['image_factory'] / "state" / "base-images" / "node-22-bookworm-slim.yaml"
+        node_state = workspace['cascadeguard'] / "state" / "base-images" / "node-22-bookworm-slim.yaml"
         assert node_state.exists(), "node base image state file not created"
         
         # Step 4: Verify backstage state content
@@ -114,7 +114,7 @@ RUN npm install
     def test_end_to_end_external_image(self, workspace):
         """Test complete workflow for an external image."""
         # Step 1: Create images.yaml with an external image
-        images_yaml = workspace['image_factory'] / "images.yaml"
+        images_yaml = workspace['cascadeguard'] / "images.yaml"
         images_yaml.write_text(yaml.dump([
             {
                 'name': 'postgres',
@@ -128,11 +128,11 @@ RUN npm install
         ]))
         
         # Step 2: Run the tool
-        tool = ImageFactoryTool(workspace['image_factory'])
+        tool = CascadeGuardTool(workspace['cascadeguard'])
         tool.process()
         
         # Step 3: Verify state file was created
-        postgres_state = workspace['image_factory'] / "state" / "images" / "postgres.yaml"
+        postgres_state = workspace['cascadeguard'] / "state" / "images" / "postgres.yaml"
         assert postgres_state.exists(), "postgres state file not created"
         
         # Step 4: Verify state content
@@ -151,7 +151,7 @@ RUN npm install
     
     def test_end_to_end_image_becomes_managed(self, workspace):
         """Test workflow when external image becomes managed."""
-        images_yaml = workspace['image_factory'] / "images.yaml"
+        images_yaml = workspace['cascadeguard'] / "images.yaml"
         
         # Step 1: Start with external image
         images_yaml.write_text(yaml.dump([
@@ -163,10 +163,10 @@ RUN npm install
             }
         ]))
         
-        tool = ImageFactoryTool(workspace['image_factory'])
+        tool = CascadeGuardTool(workspace['cascadeguard'])
         tool.process()
         
-        state_file = workspace['image_factory'] / "state" / "images" / "myapp.yaml"
+        state_file = workspace['cascadeguard'] / "state" / "images" / "myapp.yaml"
         with open(state_file) as f:
             state1 = yaml.safe_load(f)
         
@@ -174,7 +174,7 @@ RUN npm install
         assert state1['repoURL'] == 'docker.io/library/myapp'
         
         # Step 2: Add source info to make it managed
-        # Create Dockerfile in the root (parent of image-factory)
+        # Create Dockerfile in the root (parent of cascadeguard)
         dockerfile = workspace['root'] / "backstage" / "app" / "Dockerfile"
         dockerfile.parent.mkdir(parents=True, exist_ok=True)
         dockerfile.write_text("FROM alpine:latest\n")
@@ -207,7 +207,7 @@ RUN npm install
     
     def test_end_to_end_multiple_images_same_base(self, workspace):
         """Test workflow with multiple images using the same base."""
-        # Create Dockerfiles in the root (parent of image-factory)
+        # Create Dockerfiles in the root (parent of cascadeguard)
         (workspace['root'] / "apps" / "app1").mkdir(parents=True)
         (workspace['root'] / "apps" / "app1" / "Dockerfile").write_text("FROM node:22-bookworm-slim\n")
         
@@ -215,7 +215,7 @@ RUN npm install
         (workspace['root'] / "apps" / "app2" / "Dockerfile").write_text("FROM node:22-bookworm-slim\n")
         
         # Create images.yaml
-        images_yaml = workspace['image_factory'] / "images.yaml"
+        images_yaml = workspace['cascadeguard'] / "images.yaml"
         images_yaml.write_text(yaml.dump([
             {
                 'name': 'app1',
@@ -240,15 +240,15 @@ RUN npm install
         ]))
         
         # Run tool
-        tool = ImageFactoryTool(workspace['image_factory'])
+        tool = CascadeGuardTool(workspace['cascadeguard'])
         tool.process()
         
         # Verify both images created
-        assert (workspace['image_factory'] / "state" / "images" / "app1.yaml").exists()
-        assert (workspace['image_factory'] / "state" / "images" / "app2.yaml").exists()
+        assert (workspace['cascadeguard'] / "state" / "images" / "app1.yaml").exists()
+        assert (workspace['cascadeguard'] / "state" / "images" / "app2.yaml").exists()
         
         # Verify single base image created
-        node_state = workspace['image_factory'] / "state" / "base-images" / "node-22-bookworm-slim.yaml"
+        node_state = workspace['cascadeguard'] / "state" / "base-images" / "node-22-bookworm-slim.yaml"
         assert node_state.exists()
         
         with open(node_state) as f:
@@ -259,10 +259,10 @@ RUN npm install
     
     def test_images_yaml_precedence(self, workspace):
         """Test that images.yaml takes precedence over state files."""
-        images_yaml = workspace['image_factory'] / "images.yaml"
+        images_yaml = workspace['cascadeguard'] / "images.yaml"
         
         # Create initial state with runtime data
-        state_file = workspace['image_factory'] / "state" / "images" / "myapp.yaml"
+        state_file = workspace['cascadeguard'] / "state" / "images" / "myapp.yaml"
         state_file.write_text(yaml.dump({
             'name': 'myapp',
             'enrolledAt': '2024-01-01T00:00:00Z',
@@ -286,7 +286,7 @@ RUN npm install
         ]))
         
         # Run tool
-        tool = ImageFactoryTool(workspace['image_factory'])
+        tool = CascadeGuardTool(workspace['cascadeguard'])
         tool.process()
         
         # Verify merge

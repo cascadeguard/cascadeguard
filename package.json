@@ -1,7 +1,7 @@
 {
-  "name": "image-factory-kargo-integration-test",
+  "name": "cascadeguard-kargo-integration-test",
   "version": "1.0.0",
-  "description": "Kargo integration test for Image Factory",
+  "description": "Kargo integration test for CascadeGuard",
   "main": "kargo-integration.test.ts",
   "scripts": {
     "test": "npx ts-node kargo-integration.test.ts",
@@ -12,7 +12,7 @@
     "ts-node": "^10.9.0",
     "typescript": "^5.0.0"
   },
-  "keywords": ["kargo", "integration-test", "image-factory"],
+  "keywords": ["kargo", "integration-test", "cascadeguard"],
   "author": "Platform Team",
   "license": "MIT"
 }

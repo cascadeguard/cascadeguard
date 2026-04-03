@@ -64,7 +64,7 @@ def build_analysis_job_spec() -> dict:
         "backoffLimit": 1,
         "template": {
             "spec": {
-                "serviceAccountName": "image-factory",
+                "serviceAccountName": "cascadeguard",
                 "restartPolicy": "Never",
                 "imagePullSecrets": [{"name": "gh-docker-registry-creds"}],
                 "containers": [
@@ -82,7 +82,7 @@ def build_analysis_job_spec() -> dict:
                             "--source-provider", "{{args.sourceProvider}}",
                             "--git-repo", "{{args.gitRepo}}",
                             "--git-branch", "{{args.gitBranch}}",
-                            "--image-factory-dir", "/workspace/repo/image-factory"
+                            "--cascadeguard-dir", "/workspace/repo/cascadeguard"
                         ],
                         "volumeMounts": [
                             {
@@ -139,7 +139,7 @@ def build_analysis_job_spec() -> dict:
                     {
                         "name": "analyzer-script",
                         "configMap": {
-                            "name": "image-factory-analysis"
+                            "name": "cascadeguard-analysis"
                         }
                     },
                     {

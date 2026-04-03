@@ -1,7 +1,7 @@
 [project]
-name = "cascadeguard-integration-tests"
+name = "cascadeguard-acceptance-tests"
 version = "0.1.0"
-description = "CascadeGuard Integration Tests"
+description = "CascadeGuard Acceptance Tests"
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
@@ -17,4 +17,4 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["app"]
+py-modules = []

@@ -41,7 +41,7 @@ def setup_infrastructure(chart: Construct, namespace: str, script_dir: Path):
     )
     
     # ServiceAccount
-    create_service_account(chart, name="image-factory")
+    create_service_account(chart, name="cascadeguard")
     
     # Docker pull secret (managed by ESO)
     # create_secret(
@@ -64,7 +64,7 @@ def setup_infrastructure(chart: Construct, namespace: str, script_dir: Path):
     
     create_config_map(
         chart,
-        name="image-factory-analysis",
+        name="cascadeguard-analysis",
         data={
             "app.py": app_py_content,
             "pyproject.toml": pyproject_content

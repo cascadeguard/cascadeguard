@@ -39,7 +39,7 @@ def _build_git_subscription_config(source: dict, image_name: str) -> dict:
     if not git_repo_url:
         return {}
     
-    # Build include paths based on dockerfile location and image factory directory
+    # Build include paths based on dockerfile location and cascadeguard directory
     include_paths = []
     
     # Add app-specific directory based on dockerfile path
@@ -59,8 +59,8 @@ def _build_git_subscription_config(source: dict, image_name: str) -> dict:
                 app_dir = f"{dockerfile_parts[0]}/"
                 include_paths.append(app_dir)
     
-    # Always include the image factory directory for configuration changes
-    include_paths.append("image-factory/")
+    # Always include the cascadeguard directory for configuration changes
+    include_paths.append("cascadeguard/")
     
     return {
         "repoUrl": git_repo_url,

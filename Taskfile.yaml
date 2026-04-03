@@ -3,10 +3,10 @@ version: '3'
 tasks:
   # Setup (code repo has app/ and cdk8s/ at root level)
   app:setup:
-    desc: "Set up Image Factory app component"
+    desc: "Set up CascadeGuard app component"
     dir: app
     cmds:
-      - cmd: echo "🔧 Setting up Image Factory app environment..."
+      - cmd: echo "🔧 Setting up CascadeGuard app environment..."
         silent: true
       - cmd: |
           if [ -n "$CI" ]; then
@@ -28,10 +28,10 @@ tasks:
         silent: true
 
   cdk8s:setup:
-    desc: "Set up Image Factory CDK8s component"
+    desc: "Set up CascadeGuard CDK8s component"
     dir: cdk8s
     cmds:
-      - cmd: echo "🔧 Setting up Image Factory CDK8s environment..."
+      - cmd: echo "🔧 Setting up CascadeGuard CDK8s environment..."
         silent: true
       - cmd: |
           if [ -n "$CI" ]; then
@@ -80,19 +80,19 @@ tasks:
         silent: true
 
   setup:
-    desc: "Set up Image Factory development environment"
+    desc: "Set up CascadeGuard development environment"
     cmds:
       - task: app:setup
       - task: cdk8s:setup
 
   # Test setup and execution (code-only, no state required)
   test:unit:setup:
-    desc: "Set up Image Factory development environment"
+    desc: "Set up CascadeGuard development environment"
     cmds:
       - task: setup
 
   test:unit:
-    desc: "Run unit tests for Image Factory"
+    desc: "Run unit tests for CascadeGuard"
     cmds:
       - task: app:test:unit
       - task: cdk8s:test:unit
@@ -123,7 +123,7 @@ tasks:
         silent: true
 
   test:integration:
-    desc: "Run integration tests for Image Factory"
+    desc: "Run integration tests for CascadeGuard"
     dir: tests/integration
     cmds:
       - cmd: |
@@ -133,8 +133,34 @@ tasks:
             .venv/bin/python -m pytest test_integration.py -v
           fi
       
+  test:acceptance:setup:
+    desc: "Set up acceptance test environment"
+    cmds:
+      - task: setup
+      - cmd: |
+          echo "Installing acceptance test dependencies..."
+          if [ -n "$CI" ]; then
+            pip install -e "tests/acceptance/.[dev]"
+          else
+            echo "Using existing virtual environments"
+          fi
+        silent: true
+
   test:acceptance:
-    desc: "Run acceptance tests for Image Factory"
+    desc: "Run acceptance tests for CascadeGuard (CLI + CDK8s synth)"
+    dir: .
+    cmds:
+      - cmd: echo "🧪 Running CascadeGuard acceptance tests..."
+        silent: true
+      - cmd: |
+          if [ -n "$CI" ]; then
+            python -m pytest tests/acceptance/test_acceptance.py -v
+          else
+            app/.venv/bin/python -m pytest tests/acceptance/test_acceptance.py -v
+          fi
+
+  test:acceptance:kargo:
+    desc: "Run Kargo live acceptance tests (requires K8s cluster)"
     dir: .
     cmds:
       - cmd: echo "🧪 Running Kargo acceptance tests..."
@@ -143,15 +169,15 @@ tasks:
       - npm run test:kargo
 
   test:all:
-    desc: "Run all tests for Image Factory"
+    desc: "Run all tests for CascadeGuard"
     deps: [test:unit, test:integration, test:acceptance]
 
   # Component unit tests (code-only)
   app:test:unit:
-    desc: "Run unit tests for Image Factory app component"
+    desc: "Run unit tests for CascadeGuard app component"
     dir: app
     cmds:
-      - cmd: echo "🧪 Running Image Factory app unit tests..."
+      - cmd: echo "🧪 Running CascadeGuard app unit tests..."
         silent: true
       - cmd: |
           if [ -n "$CI" ]; then
@@ -161,10 +187,10 @@ tasks:
           fi
 
   cdk8s:test:unit:
-    desc: "Run unit tests for Image Factory CDK8s component"
+    desc: "Run unit tests for CascadeGuard CDK8s component"
     dir: cdk8s
     cmds:
-      - cmd: echo "🧪 Running Image Factory CDK8s unit tests..."
+      - cmd: echo "🧪 Running CascadeGuard CDK8s unit tests..."
         silent: true
       - cmd: |
           if [ -n "$CI" ]; then

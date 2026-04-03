@@ -15,14 +15,24 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    
+    env:
+      HAS_PAT_TOKEN: ${{ secrets.PAT_TOKEN && 'true' || 'false' }}
+
     steps:
+      - name: Check PAT_TOKEN availability
+        if: env.HAS_PAT_TOKEN != 'true'
+        run: |
+          echo "::warning::PAT_TOKEN secret not configured — skipping state repo synthesis."
+          echo "Set the PAT_TOKEN repository secret to enable CDK8s synth."
+
       - name: Checkout cascadeguard (code)
+        if: env.HAS_PAT_TOKEN == 'true'
         uses: actions/checkout@v4
         with:
           path: cascadeguard
-      
+
       - name: Checkout state repo (config)
+        if: env.HAS_PAT_TOKEN == 'true'
         uses: actions/checkout@v4
         with:
           repository: craigedmunds/cascadeguard-state
@@ -30,29 +40,34 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
       
       - name: Set up Python
+        if: env.HAS_PAT_TOKEN == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install Task
+        if: env.HAS_PAT_TOKEN == 'true'
         uses: arduino/setup-task@v2
-      
+
       - name: Setup CDK8s environment
+        if: env.HAS_PAT_TOKEN == 'true'
         working-directory: cascadeguard
         run: task cdk8s:setup
-      
+
       - name: Synthesize Kargo manifests
+        if: env.HAS_PAT_TOKEN == 'true'
         working-directory: cascadeguard/cdk8s
         env:
-          IMAGE_FACTORY_STATE_DIR: ${{ github.workspace }}/cascadeguard-state
+          CASCADEGUARD_STATE_DIR: ${{ github.workspace }}/cascadeguard-state
           IMAGES_YAML: ${{ github.workspace }}/cascadeguard-state/images.yaml
         run: python main.py
-      
+
       - name: Check if synthesis generated changes
+        if: env.HAS_PAT_TOKEN == 'true'
         id: check_changes
         working-directory: cascadeguard-state
         run: |
-          if git diff --quiet dist/cdk8s/image-factory.k8s.yaml; then
+          if git diff --quiet dist/cdk8s/cascadeguard.k8s.yaml; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
             echo "Kargo resources are already up to date"
           else
@@ -60,23 +75,23 @@ jobs:
             echo "Synthesis generated new Kargo resources"
             echo ""
             echo "Changes:"
-            git diff --stat dist/cdk8s/image-factory.k8s.yaml
+            git diff --stat dist/cdk8s/cascadeguard.k8s.yaml
           fi
-      
+
       - name: Commit synthesized resources to state repo
-        if: steps.check_changes.outputs.has_changes == 'true'
+        if: env.HAS_PAT_TOKEN == 'true' && steps.check_changes.outputs.has_changes == 'true'
         working-directory: cascadeguard-state
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add dist/cdk8s/image-factory.k8s.yaml
+          git add dist/cdk8s/cascadeguard.k8s.yaml
           git commit -m "Auto-synth: Regenerate Kargo resources" \
             -m "Synthesized from cascadeguard@${{ github.sha }}" \
             -m "Triggered by: ${{ github.event_name }}"
           git push
-      
+
       - name: Comment on PR
-        if: steps.check_changes.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+        if: env.HAS_PAT_TOKEN == 'true' && steps.check_changes.outputs.has_changes == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |

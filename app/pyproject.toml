@@ -1,7 +1,7 @@
 [project]
-name = "image-factory-tool"
+name = "cascadeguard-tool"
 version = "0.1.0"
-description = "Image Factory Dockerfile Analysis Tool"
+description = "CascadeGuard Dockerfile Analysis Tool"
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",

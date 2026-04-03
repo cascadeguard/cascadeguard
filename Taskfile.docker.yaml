@@ -13,7 +13,7 @@ tasks:
   synth:
     desc: "Generate Kargo manifests from state files (CDK8s synthesis)"
     env:
-      IMAGE_FACTORY_STATE_DIR: /workspace
+      CASCADEGUARD_STATE_DIR: /workspace
       IMAGES_YAML: /workspace/images.yaml
     cmds:
       - /cdk8s/.venv/bin/python /cdk8s/main.py

@@ -1,5 +1,5 @@
 """
-Image Factory CDK8s library - clean resource builders for Kargo.
+CascadeGuard CDK8s library - clean resource builders for Kargo.
 """
 
 # Data loading

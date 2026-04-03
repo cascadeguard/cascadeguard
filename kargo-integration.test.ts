@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Kargo Integration Test for Image Factory
+ * Kargo Integration Test for CascadeGuard
  * 
- * This test validates the complete image factory Kargo pipeline:
+ * This test validates the complete cascadeguard Kargo pipeline:
  * 1. Freight creation from base image updates
  * 2. Analysis stage promotion execution
  * 3. Dockerfile analysis job completion
@@ -97,10 +97,10 @@ interface Promotion extends KargoResource {
   };
 }
 
-console.log('🔧 Debug: About to define ImageFactoryKargoTest class');
+console.log('🔧 Debug: About to define CascadeGuardKargoTest class');
 
-class ImageFactoryKargoTest {
-  private readonly namespace = 'image-factory-kargo';
+class CascadeGuardKargoTest {
+  private readonly namespace = 'cascadeguard-kargo';
   private readonly analysisStage = 'analyze-dockerfile-uv';
   private readonly rebuildStage = 'rebuild-trigger-uv';
   private readonly baseImageWarehouse = 'python-3.12-slim';
@@ -109,7 +109,7 @@ class ImageFactoryKargoTest {
   private readonly pollInterval = 10000; // 10 seconds
 
   async run(): Promise<void> {
-    console.log('🚀 Starting Image Factory Kargo Integration Test');
+    console.log('🚀 Starting CascadeGuard Kargo Integration Test');
     console.log('🔧 Debug: Test execution started');
     
     try {
@@ -145,10 +145,10 @@ class ImageFactoryKargoTest {
       // Step 10: Validate GitHub Actions workflow dispatch
       await this.validateWorkflowDispatch();
       
-      console.log('✅ Image Factory Kargo Integration Test PASSED');
+      console.log('✅ CascadeGuard Kargo Integration Test PASSED');
       
     } catch (error) {
-      console.error('❌ Image Factory Kargo Integration Test FAILED:', error);
+      console.error('❌ CascadeGuard Kargo Integration Test FAILED:', error);
       // @ts-ignore - Node.js globals
       process.exit(1);
     }
@@ -161,7 +161,7 @@ class ImageFactoryKargoTest {
     // Check project exists and is ready
     console.log('🔍 Checking Kargo project...');
     console.log('�  Debug: About to execute kubectl command for project');
-    const project = await this.kubectl<KargoResource>(`get project image-factory-kargo -n ${this.namespace} -o json`);
+    const project = await this.kubectl<KargoResource>(`get project cascadeguard-kargo -n ${this.namespace} -o json`);
     console.log('🔧 Debug: kubectl command for project completed');
     console.log('📊 Project status:', JSON.stringify(project.status?.conditions, null, 2));
     if (!project.status?.conditions?.some(c => c.type === 'Ready' && c.status === 'True')) {
@@ -485,18 +485,18 @@ class ImageFactoryKargoTest {
     console.log('📝 Validating git commit with state file updates...');
     
     try {
-      // Check recent git commits for image factory changes
+      // Check recent git commits for cascadeguard changes
       const recentCommits = await this.kubectlRaw(`run git-check --image=alpine/git --rm -i --restart=Never -- sh -c "
         git clone --depth 10 https://github.com/craigedmunds/argocd-eda.git /tmp/repo &&
         cd /tmp/repo &&
-        git log --oneline -5 --grep='image-factory\\|Image Factory\\|analysis\\|state' -- image-factory/state/
+        git log --oneline -5 --grep='cascadeguard\\|CascadeGuard\\|analysis\\|state' -- cascadeguard/state/
       "`);
       
-      if (recentCommits.includes('image-factory') || recentCommits.includes('analysis') || recentCommits.includes('state')) {
-        console.log('✅ Recent git commits found with image factory state updates');
+      if (recentCommits.includes('cascadeguard') || recentCommits.includes('analysis') || recentCommits.includes('state')) {
+        console.log('✅ Recent git commits found with cascadeguard state updates');
         console.log('📋 Recent commits:', recentCommits.split('\n').slice(0, 3).join('\n'));
       } else {
-        console.log('⚠️ No recent image factory commits found - analysis may not have updated state files');
+        console.log('⚠️ No recent cascadeguard commits found - analysis may not have updated state files');
         // Don't fail the test, just warn
       }
     } catch (error) {
@@ -628,7 +628,7 @@ class ImageFactoryKargoTest {
 // Run the test
 // Force execution for debugging
 console.log('🔧 Debug: Forcing test execution...');
-const test = new ImageFactoryKargoTest();
+const test = new CascadeGuardKargoTest();
 console.log('🔧 Debug: Test instance created, calling run()...');
 test.run().catch((error: any) => {
   console.error('Test execution failed:', error);
@@ -637,4 +637,4 @@ test.run().catch((error: any) => {
 });
 
 // @ts-ignore - CommonJS export
-module.exports = { ImageFactoryKargoTest };
+module.exports = { CascadeGuardKargoTest };

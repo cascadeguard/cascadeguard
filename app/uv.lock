@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "image-factory-tool"
+name = "cascadeguard-tool"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
