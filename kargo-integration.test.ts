@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kargo Integration Test for Image Factory
+ * Kargo Integration Test for CascadeGuard
  * 
  * This test validates the complete cascadeguard Kargo pipeline:
  * 1. Freight creation from base image updates
