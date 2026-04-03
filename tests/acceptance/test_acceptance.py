@@ -349,11 +349,22 @@ class TestGenerateCICLI:
     """
     Acceptance tests for the generate_ci.py CLI tool.
 
+    Platform selection
+    ==================
+    The CI platform is determined in priority order:
+
+    1. --platform flag  (CLI override)
+    2. cascadeguard.yaml ci.platform field  (per-repo config)
+    3. Default: github
+
+    cascadeguard.yaml example:
+        ci:
+          platform: github   # or: gitlab (planned)
+
     How users invoke generate-ci
     =============================
     Users run the command explicitly when they want to (re-)generate their
-    GitHub Actions workflows — typically after enrolling a new image or during
-    initial repo setup:
+    CI pipeline files — typically after enrolling a new image or initial repo setup:
 
       # Via Taskfile (recommended — wraps the Docker image):
       task generate-ci
@@ -369,7 +380,7 @@ class TestGenerateCICLI:
     re-running generate-ci is the recommended workflow.
     """
 
-    FIXTURE_DIR = Path(__file__).parent / "fixtures" / "generate-ci"
+    FIXTURE_DIR = Path(__file__).parent / "fixtures" / "github-actions"
     EXPECTED_WORKFLOWS = {
         "ci.yaml",
         "build-image.yaml",
@@ -379,9 +390,10 @@ class TestGenerateCICLI:
 
     @pytest.fixture
     def workspace(self, tmp_path):
-        """Copy the fixture images.yaml into a temp workspace directory."""
+        """Copy the github-actions fixture (images.yaml + cascadeguard.yaml) into a temp workspace."""
         import shutil
         shutil.copy(self.FIXTURE_DIR / "images.yaml", tmp_path / "images.yaml")
+        shutil.copy(self.FIXTURE_DIR / "cascadeguard.yaml", tmp_path / "cascadeguard.yaml")
         return tmp_path
 
     def _run_generate_ci(self, workspace: Path, extra_args=None):
@@ -529,6 +541,66 @@ class TestGenerateCICLI:
             assert wf_name in result.stdout, (
                 f"Expected '{wf_name}' to appear in stdout; got:\n{result.stdout}"
             )
+
+    # ------------------------------------------------------------------
+    # Platform config tests
+    # ------------------------------------------------------------------
+
+    def test_explicit_github_platform_flag(self, workspace):
+        """--platform github must generate GitHub Actions workflows."""
+        # Remove cascadeguard.yaml to confirm flag takes precedence over absence of config
+        (workspace / "cascadeguard.yaml").unlink(missing_ok=True)
+        result = self._run_generate_ci(workspace, extra_args=["--platform", "github"])
+        assert result.returncode == 0, result.stderr
+        workflows_dir = workspace / ".github" / "workflows"
+        actual = {f.name for f in workflows_dir.iterdir()}
+        assert actual == self.EXPECTED_WORKFLOWS
+
+    def test_cascadeguard_yaml_platform_github(self, tmp_path):
+        """cascadeguard.yaml ci.platform: github selects GitHub Actions output."""
+        import shutil
+        shutil.copy(self.FIXTURE_DIR / "images.yaml", tmp_path / "images.yaml")
+        (tmp_path / "cascadeguard.yaml").write_text("ci:\n  platform: github\n")
+
+        result = self._run_generate_ci(tmp_path)
+        assert result.returncode == 0, result.stderr
+        workflows_dir = tmp_path / ".github" / "workflows"
+        assert workflows_dir.is_dir()
+        actual = {f.name for f in workflows_dir.iterdir()}
+        assert actual == self.EXPECTED_WORKFLOWS
+
+    def test_default_platform_is_github_when_no_config(self, tmp_path):
+        """When cascadeguard.yaml is absent, github is the default platform."""
+        import shutil
+        shutil.copy(self.FIXTURE_DIR / "images.yaml", tmp_path / "images.yaml")
+        # Intentionally do NOT copy cascadeguard.yaml
+
+        result = self._run_generate_ci(tmp_path)
+        assert result.returncode == 0, result.stderr
+        workflows_dir = tmp_path / ".github" / "workflows"
+        assert workflows_dir.is_dir(), "Default github platform did not create .github/workflows/"
+
+    def test_unsupported_platform_exits_nonzero(self, workspace):
+        """--platform with an unknown value must exit non-zero with an error."""
+        result = self._run_generate_ci(workspace, extra_args=["--platform", "circleci"])
+        assert result.returncode != 0, "Expected non-zero exit for unknown platform"
+        assert "circleci" in result.stderr.lower() or "unknown" in result.stderr.lower()
+
+    def test_planned_platform_gitlab_exits_nonzero(self, workspace):
+        """--platform gitlab must exit non-zero (planned but not yet implemented)."""
+        result = self._run_generate_ci(workspace, extra_args=["--platform", "gitlab"])
+        assert result.returncode != 0, "GitLab is planned but not implemented; should fail"
+        assert "gitlab" in result.stderr.lower()
+
+    def test_platform_flag_overrides_cascadeguard_yaml(self, workspace):
+        """--platform flag takes precedence over cascadeguard.yaml ci.platform."""
+        # Set config to an unsupported platform; flag should win
+        (workspace / "cascadeguard.yaml").write_text("ci:\n  platform: gitlab\n")
+        result = self._run_generate_ci(workspace, extra_args=["--platform", "github"])
+        assert result.returncode == 0, (
+            f"--platform flag should override cascadeguard.yaml:\n{result.stderr}"
+        )
+        assert (workspace / ".github" / "workflows").is_dir()
 
 
 if __name__ == '__main__':

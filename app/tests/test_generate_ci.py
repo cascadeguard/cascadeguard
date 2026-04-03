@@ -12,6 +12,8 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from generate_ci import (
     load_images,
+    load_config,
+    resolve_platform,
     build_image_workflow,
     ci_workflow,
     scheduled_scan_workflow,
@@ -223,3 +225,70 @@ class TestGenerateCi:
             assert "alpine-3.20" in content, (
                 f"{wf_file.name} does not contain newly added image 'alpine-3.20'"
             )
+
+
+class TestLoadConfig:
+    def test_returns_empty_dict_when_no_config_file(self, tmp_path):
+        assert load_config(tmp_path) == {}
+
+    def test_loads_config_from_cascadeguard_yaml(self, tmp_path):
+        (tmp_path / "cascadeguard.yaml").write_text("ci:\n  platform: github\n")
+        config = load_config(tmp_path)
+        assert config == {"ci": {"platform": "github"}}
+
+    def test_returns_empty_dict_for_empty_config_file(self, tmp_path):
+        (tmp_path / "cascadeguard.yaml").write_text("")
+        assert load_config(tmp_path) == {}
+
+
+class TestResolvePlatform:
+    def test_defaults_to_github(self):
+        assert resolve_platform({}, None) == "github"
+
+    def test_reads_from_config(self):
+        assert resolve_platform({"ci": {"platform": "gitlab"}}, None) == "gitlab"
+
+    def test_flag_overrides_config(self):
+        assert resolve_platform({"ci": {"platform": "gitlab"}}, "github") == "github"
+
+    def test_flag_overrides_default(self):
+        assert resolve_platform({}, "github") == "github"
+
+    def test_lowercases_platform(self):
+        assert resolve_platform({}, "GitHub") == "github"
+
+
+class TestGenerateCiPlatform:
+    def test_generates_github_with_explicit_platform(self, tmp_path):
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump(SAMPLE_IMAGES))
+
+        generate_ci(images_yaml_path=images_yaml, output_dir=tmp_path, platform="github")
+
+        workflows_dir = tmp_path / ".github" / "workflows"
+        assert workflows_dir.is_dir()
+
+    def test_generates_github_from_cascadeguard_yaml(self, tmp_path):
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump(SAMPLE_IMAGES))
+        (tmp_path / "cascadeguard.yaml").write_text("ci:\n  platform: github\n")
+
+        generate_ci(images_yaml_path=images_yaml, output_dir=tmp_path)
+
+        assert (tmp_path / ".github" / "workflows").is_dir()
+
+    def test_unknown_platform_raises_system_exit(self, tmp_path):
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump(SAMPLE_IMAGES))
+
+        with pytest.raises(SystemExit) as exc_info:
+            generate_ci(images_yaml_path=images_yaml, output_dir=tmp_path, platform="circleci")
+        assert exc_info.value.code != 0
+
+    def test_gitlab_planned_raises_system_exit(self, tmp_path):
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump(SAMPLE_IMAGES))
+
+        with pytest.raises(SystemExit) as exc_info:
+            generate_ci(images_yaml_path=images_yaml, output_dir=tmp_path, platform="gitlab")
+        assert exc_info.value.code != 0

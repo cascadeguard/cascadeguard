@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
 """
-Generate GitHub Actions CI/CD workflow files from images.yaml.
+Generate CI/CD pipeline files from images.yaml.
 
-Reads images.yaml and emits four workflow files into .github/workflows/:
+The target CI platform is controlled by cascadeguard.yaml (in the same
+directory as images.yaml) or by the --platform flag:
 
-  ci.yaml               — PR checks + push-to-main build/scan/sign pipeline
-  build-image.yaml      — reusable workflow_call called by ci.yaml and release.yaml
-  scheduled-scan.yaml   — nightly CVE re-scan of published images
-  release.yaml          — tag-triggered sign+push+release-notes
+  cascadeguard.yaml:
+    ci:
+      platform: github   # default; also accepts: gitlab (future)
+
+Supported platforms
+-------------------
+github (default)
+    Emits four GitHub Actions workflow files under .github/workflows/:
+      ci.yaml               — PR checks + push-to-main build/scan/sign pipeline
+      build-image.yaml      — reusable workflow_call
+      scheduled-scan.yaml   — nightly CVE re-scan of published images
+      release.yaml          — tag-triggered sign+push+release-notes
+
+gitlab (planned)
+    Will emit .gitlab-ci.yml; not yet implemented.
 
 Usage (inside the CascadeGuard Docker image):
   generate-ci --images-yaml /workspace/images.yaml --output-dir /workspace
+  generate-ci --platform github   # explicit override
 """
 
 import argparse
@@ -18,6 +31,34 @@ import sys
 from pathlib import Path
 
 import yaml
+
+SUPPORTED_PLATFORMS = ("github",)
+PLANNED_PLATFORMS = ("gitlab",)
+
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+
+def load_config(output_dir: Path) -> dict:
+    """Load cascadeguard.yaml from the repo root, returning {} if absent."""
+    config_path = output_dir / "cascadeguard.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def resolve_platform(config: dict, platform_flag: str | None) -> str:
+    """
+    Determine the target CI platform.
+
+    Priority: --platform flag > cascadeguard.yaml ci.platform > default (github).
+    """
+    if platform_flag:
+        return platform_flag.lower()
+    return (config.get("ci") or {}).get("platform", "github").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -441,42 +482,60 @@ jobs:
 # ---------------------------------------------------------------------------
 
 
-def generate_ci(images_yaml_path: Path, output_dir: Path, dry_run: bool = False) -> None:
+def generate_github_actions(images: list, output_dir: Path, dry_run: bool) -> None:
+    """Emit the four GitHub Actions workflow files."""
+    workflows_dir = output_dir / ".github" / "workflows"
+    print(f"  platform : github")
+    print(f"  output   : {workflows_dir}")
+
+    write_workflow(workflows_dir / "build-image.yaml", build_image_workflow(images), dry_run)
+    write_workflow(workflows_dir / "ci.yaml", ci_workflow(images), dry_run)
+    write_workflow(workflows_dir / "scheduled-scan.yaml", scheduled_scan_workflow(images), dry_run)
+    write_workflow(workflows_dir / "release.yaml", release_workflow(images), dry_run)
+
+
+def generate_ci(
+    images_yaml_path: Path,
+    output_dir: Path,
+    dry_run: bool = False,
+    platform: str | None = None,
+) -> None:
     images = load_images(images_yaml_path)
     if not images:
         print("WARNING: images.yaml is empty — no workflows generated.", file=sys.stderr)
         return
 
-    workflows_dir = output_dir / ".github" / "workflows"
-    print(f"Generating CI workflows for {len(images)} image(s) → {workflows_dir}")
+    config = load_config(output_dir)
+    resolved_platform = resolve_platform(config, platform)
 
-    write_workflow(
-        workflows_dir / "build-image.yaml",
-        build_image_workflow(images),
-        dry_run,
-    )
-    write_workflow(
-        workflows_dir / "ci.yaml",
-        ci_workflow(images),
-        dry_run,
-    )
-    write_workflow(
-        workflows_dir / "scheduled-scan.yaml",
-        scheduled_scan_workflow(images),
-        dry_run,
-    )
-    write_workflow(
-        workflows_dir / "release.yaml",
-        release_workflow(images),
-        dry_run,
-    )
+    print(f"Generating CI resources for {len(images)} image(s)…")
+
+    if resolved_platform == "github":
+        generate_github_actions(images, output_dir, dry_run)
+    elif resolved_platform in PLANNED_PLATFORMS:
+        print(
+            f"ERROR: platform '{resolved_platform}' is planned but not yet implemented.\n"
+            f"       Supported platforms: {', '.join(SUPPORTED_PLATFORMS)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    else:
+        print(
+            f"ERROR: unknown platform '{resolved_platform}'.\n"
+            f"       Supported platforms: {', '.join(SUPPORTED_PLATFORMS)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     print("Done.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate GitHub Actions workflow files from images.yaml"
+        description=(
+            "Generate CI/CD pipeline files from images.yaml. "
+            "Platform defaults to 'github'; override via cascadeguard.yaml or --platform."
+        )
     )
     parser.add_argument(
         "--images-yaml",
@@ -486,7 +545,13 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         default="/workspace",
-        help="Root of the state repo — workflows go under .github/workflows/ (default: /workspace)",
+        help="Repo root — cascadeguard.yaml is read from here; output written relative to here (default: /workspace)",
+    )
+    parser.add_argument(
+        "--platform",
+        default=None,
+        help=f"CI platform to target ({', '.join(SUPPORTED_PLATFORMS)}). "
+             f"Overrides cascadeguard.yaml ci.platform. Default: github.",
     )
     parser.add_argument(
         "--dry-run",
@@ -499,6 +564,7 @@ def main() -> None:
         images_yaml_path=Path(args.images_yaml),
         output_dir=Path(args.output_dir),
         dry_run=args.dry_run,
+        platform=args.platform,
     )
 
 

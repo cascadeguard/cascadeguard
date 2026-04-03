@@ -1,7 +1,8 @@
-# CascadeGuard acceptance-test fixture — generate-ci
+# CascadeGuard acceptance-test fixture — github-actions
 #
 # A minimal but representative images.yaml used to verify that
-# `cascadeguard generate-ci` produces valid GitHub Actions workflow files.
+# `cascadeguard generate-ci` (platform: github) produces valid
+# GitHub Actions workflow files.
 # Two images are intentionally included to exercise the matrix strategy.
 
 - name: python-3.12-slim

@@ -1,0 +1,6 @@
+# CascadeGuard config — github-actions acceptance-test fixture
+#
+# Explicitly declares that this repo targets GitHub Actions.
+# This is also the default when cascadeguard.yaml is absent.
+ci:
+  platform: github
