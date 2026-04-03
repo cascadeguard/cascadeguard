@@ -1,0 +1,3 @@
+# Security-sensitive files require security team review
+SECURITY.md @cascadeguard/core
+.github/ @cascadeguard/core
