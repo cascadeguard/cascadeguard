@@ -43,6 +43,7 @@ This is the canonical process for how features move from idea to production.
 | SDLC process | `SDLC.md` |
 | ADRs | `docs/adr/` |
 | Contribution guide | `CONTRIBUTING.md` |
+| Project artifacts (plans, PRDs, strategies) | `/workspace/.ai/projects/cascadeguard/` (workspace root — canonical location for all project documentation) |
 
 ## Tech Stack
 
