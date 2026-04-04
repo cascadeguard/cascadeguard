@@ -349,7 +349,7 @@ Engineers are expected to:
 - **Resolve merge conflicts** — the PR author owns keeping their branch up to date with `main`.
 - **Update issue status** — move issues to `blocked` with a comment explaining the blocker. Do not leave issues silently stalled.
 - **Respond to review feedback** — address reviewer comments within 1h.
-- **Use clickable links for external references** — when referencing GitHub issues, PRs, external services, or any resource outside the current system, always use full clickable Markdown links. Never leave bare identifiers or URLs that readers cannot click to navigate to.
+- **Use clickable links for external references** — when referencing GitHub issues, PRs, external services, or any resource outside the current system, always use full clickable Markdown links (e.g. `[PR #46](https://github.com/cascadeguard/cascadeguard/pull/46)`). Never leave bare identifiers or plain-text URLs that readers cannot click to navigate to. Where the platform supports it, links to external systems should open in a new tab (use HTML `<a href="..." target="_blank">` when Markdown target control is unavailable).
 
 ### Board Cadence
 
