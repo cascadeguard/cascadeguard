@@ -3,14 +3,15 @@
 CascadeGuard — container image lifecycle tool.
 
 Commands:
-  validate    Validate images.yaml configuration
-  enrol       Enrol a new image in images.yaml
-  check       Check image and base image states
-  build       Trigger a build via GitHub Actions
-  deploy      Deploy via ArgoCD
-  test        Check build test results via GitHub Actions
-  pipeline    Run full pipeline (validate -> check -> build -> deploy -> test)
-  status      Show status of all images
+  validate        Validate images.yaml configuration
+  enrol           Enrol a new image in images.yaml
+  check           Check image and base image states
+  build           Trigger a build via GitHub Actions
+  deploy          Deploy via ArgoCD
+  test            Check build test results via GitHub Actions
+  pipeline        Run full pipeline (validate -> check -> build -> deploy -> test)
+  status          Show status of all images
+  actions pin     Pin GitHub Actions refs to full commit SHAs
 """
 import argparse
 import json
@@ -450,6 +451,128 @@ class CascadeGuardTool:
 
 
 # ---------------------------------------------------------------------------
+# Actions pinner
+# ---------------------------------------------------------------------------
+
+_SHA_RE = re.compile(r'^[0-9a-f]{40}$')
+# Matches a YAML `uses:` line (with or without leading `- `): captures (prefix, action, ref, trailing)
+_USES_RE = re.compile(r'^(\s*(?:-\s+)?uses:\s+)([^@\n\s]+)@([^\s\n#]+)(.*?)$')
+# Matches any `uses:` line (to detect local/unversioned actions with no `@`)
+_USES_ANY_RE = re.compile(r'^\s*(?:-\s+)?uses:\s+\S')
+
+
+class ActionsPinner:
+    """Pins mutable GitHub Actions refs (tags/branches) to full commit SHAs."""
+
+    def __init__(self, token: str, workflows_dir: Path):
+        self.token = token
+        self.workflows_dir = workflows_dir
+        self._sha_cache: Dict[str, str] = {}
+
+    def _resolve_sha(self, owner_repo: str, ref: str) -> Optional[str]:
+        """Resolve a tag/branch ref to its commit SHA via the GitHub API."""
+        cache_key = f"{owner_repo}@{ref}"
+        if cache_key in self._sha_cache:
+            return self._sha_cache[cache_key]
+
+        url = f"https://api.github.com/repos/{owner_repo}/commits/{ref}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read())
+                sha = data["sha"]
+                self._sha_cache[cache_key] = sha
+                return sha
+        except (urllib.error.HTTPError, urllib.error.URLError, KeyError):
+            return None
+
+    def pin(self, dry_run: bool = False, update: bool = False) -> Dict:
+        """
+        Pin all mutable action refs in workflow files to commit SHAs.
+
+        Returns a summary dict with keys: pinned, already_pinned, skipped.
+        """
+        pinned = 0
+        already_pinned = 0
+        skipped = 0
+
+        patterns = list(self.workflows_dir.glob("*.yml")) + list(self.workflows_dir.glob("*.yaml"))
+
+        for wf_path in sorted(patterns):
+            original = wf_path.read_text()
+            lines = original.splitlines(keepends=True)
+            new_lines = []
+            changed = False
+
+            for line in lines:
+                m = _USES_RE.match(line)
+                if not m:
+                    # Count `uses:` lines without `@` (e.g. local actions) as skipped
+                    if _USES_ANY_RE.match(line):
+                        skipped += 1
+                    new_lines.append(line)
+                    continue
+
+                prefix, action, ref, trailing = m.groups()
+
+                # Skip local composite actions (relative paths)
+                if action.startswith('./') or '/' not in action:
+                    new_lines.append(line)
+                    skipped += 1
+                    continue
+
+                eol = '\n' if line.endswith('\n') else ''
+
+                if _SHA_RE.match(ref):
+                    # Already pinned to a full SHA
+                    if not update:
+                        new_lines.append(line)
+                        already_pinned += 1
+                        continue
+
+                    # --update: re-pin to latest SHA for the same tag (from trailing comment)
+                    comment_match = re.search(r'#\s*(\S+)', trailing)
+                    if not comment_match:
+                        new_lines.append(line)
+                        already_pinned += 1
+                        continue
+
+                    original_ref = comment_match.group(1)
+                    sha = self._resolve_sha(action, original_ref)
+                    if sha is None or sha == ref:
+                        new_lines.append(line)
+                        already_pinned += 1
+                        continue
+
+                    new_lines.append(f"{prefix}{action}@{sha} # {original_ref}{eol}")
+                    changed = True
+                    pinned += 1
+                else:
+                    # Mutable ref — resolve to SHA
+                    sha = self._resolve_sha(action, ref)
+                    if sha is None:
+                        new_lines.append(line)
+                        skipped += 1
+                        continue
+
+                    new_lines.append(f"{prefix}{action}@{sha} # {ref}{eol}")
+                    changed = True
+                    pinned += 1
+
+            if changed and not dry_run:
+                wf_path.write_text(''.join(new_lines))
+
+        return {"pinned": pinned, "already_pinned": already_pinned, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
 # Provider interfaces
 # ---------------------------------------------------------------------------
 
@@ -827,6 +950,34 @@ def cmd_pipeline(args) -> int:
     return 0
 
 
+def cmd_actions_pin(args) -> int:
+    """Pin mutable GitHub Actions refs to full commit SHAs."""
+    token = getattr(args, 'github_token', None) or os.environ.get("GITHUB_TOKEN", "")
+    workflows_dir = Path(args.workflows_dir)
+
+    if not workflows_dir.exists():
+        print(f"Error: workflows directory not found: {workflows_dir}", file=sys.stderr)
+        return 1
+
+    pinner = ActionsPinner(token=token, workflows_dir=workflows_dir)
+    summary = pinner.pin(dry_run=args.dry_run, update=args.update)
+
+    pinned = summary["pinned"]
+    already_pinned = summary["already_pinned"]
+    skipped = summary["skipped"]
+
+    if args.dry_run:
+        print(f"Dry run — no files written")
+
+    print(f"Actions pinned: {pinned}, already pinned: {already_pinned}, skipped: {skipped}")
+    return 0
+
+
+def cmd_actions(args) -> int:
+    """Dispatch 'actions' subcommands."""
+    return {"pin": cmd_actions_pin}[args.actions_command](args)
+
+
 def cmd_status(args) -> int:
     """Show status of all images from state files."""
     state_dir = Path(args.state_dir)
@@ -983,6 +1134,35 @@ Commands:
     # status
     sub.add_parser("status", help="Show status of all images")
 
+    # actions
+    actions = sub.add_parser("actions", help="GitHub Actions utilities")
+    actions_sub = actions.add_subparsers(dest="actions_command", metavar="subcommand")
+    actions_sub.required = True
+
+    actions_pin = actions_sub.add_parser(
+        "pin",
+        help="Pin action refs to full commit SHAs",
+    )
+    actions_pin.add_argument(
+        "--workflows-dir",
+        default=".github/workflows",
+        help="Path to workflows directory (default: .github/workflows)",
+    )
+    actions_pin.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview changes without writing files",
+    )
+    actions_pin.add_argument(
+        "--update",
+        action="store_true",
+        help="Re-pin already-pinned SHAs to the latest SHA for the same tag",
+    )
+    actions_pin.add_argument(
+        "--github-token",
+        help="GitHub token (or GITHUB_TOKEN env var)",
+    )
+
     return parser
 
 
@@ -999,6 +1179,7 @@ def main() -> int:
         "test": cmd_test,
         "pipeline": cmd_pipeline,
         "status": cmd_status,
+        "actions": cmd_actions,
     }
 
     return commands[args.command](args)
