@@ -174,7 +174,7 @@ jobs:
           output-format: table
 
       - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
           format: table
@@ -321,7 +321,7 @@ jobs:
           output-file: grype-${{{{ matrix.name }}}}.json
 
       - name: Scan with Trivy (SARIF)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{{{ matrix.registry }}}}/${{{{ matrix.image }}}}:${{{{ matrix.tag }}}}
           format: sarif
