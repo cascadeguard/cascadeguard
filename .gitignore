@@ -35,4 +35,6 @@ cdk8s/.venv/
 Thumbs.db
 
 # Internal project docs (local workspace only)
-.ai/
+.ai/*
+# Agent instructions are version-controlled
+!.ai/agents/
