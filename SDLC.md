@@ -287,7 +287,7 @@ This section defines who is responsible for keeping engineering work flowing wit
 |---|---|
 | **IC Engineer** | Own CI green status, merge conflict resolution, status updates on assigned issues |
 | **CTO** | PR review (1h SLA), blocker triage (<30min), hourly issue health scans, unassigned issue triage |
-| **Product Owner** | Acceptance validation for user-facing changes (same day), backlog health (weekly) |
+| **Product Owner** | Acceptance validation for user-facing changes (<2h), backlog health (weekly) |
 | **Board** | Strategic review only — async daily summary + weekly sync |
 
 ### Event-Driven Response (Tier 1)
@@ -299,7 +299,7 @@ These status transitions require prompt action:
 | Issue moves to **blocked** | CTO | <30min — assess blocker, provide guidance or reassign |
 | PR marked **ready for review** (CI green) | CTO | <30min to begin review, <1h to complete |
 | Issue moves to **done** (user-facing) | PO | <1h — validate acceptance criteria |
-| Issue moves to **done** (technical) | CTO | Next hourly review |
+| Issue moves to **done** (technical) | CTO | Next hourly scan |
 
 ### Scheduled Scans (Tier 2 — Hourly)
 
