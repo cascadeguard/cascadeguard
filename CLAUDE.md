@@ -43,6 +43,7 @@ This is the canonical process for how features move from idea to production.
 | SDLC process | `SDLC.md` |
 | ADRs | `docs/adr/` |
 | Contribution guide | `CONTRIBUTING.md` |
+| Project instructions (cross-repo) | [cascadeguard-docs/CLAUDE.md](https://github.com/cascadeguard/cascadeguard-docs/blob/main/CLAUDE.md) |
 
 ## Tech Stack
 
