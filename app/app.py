@@ -866,7 +866,7 @@ def _parse_trivy_cves(trivy_path: Path) -> List[Dict]:
         for vuln in result.get("Vulnerabilities", []):
             findings.append({
                 "cve": vuln.get("VulnerabilityID", "UNKNOWN"),
-                "severity": vuln.get("Severity", "Unknown"),
+                "severity": vuln.get("Severity", "Unknown").capitalize(),
                 "package": vuln.get("PkgName", "unknown"),
                 "version": vuln.get("InstalledVersion", "unknown"),
                 "type": result.get("Type", "unknown"),
