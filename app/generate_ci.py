@@ -161,14 +161,17 @@ jobs:
           context: .
           file: ${{ inputs.dockerfile }}
           push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}  # load into local daemon on PRs so scanners can find the image
           tags: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
           cache-from: type=gha,scope=${{ inputs.name }}
-          cache-to: type=gha,scope=${{ inputs.name }},mode=max
+          # cache-to requires push=true; load=true is incompatible with GHA cache export
+          cache-to: ${{ inputs.push && format('type=gha,scope={0},mode=max', inputs.name) || '' }}
 
       - name: Scan with Grype
         uses: anchore/scan-action@v6
         with:
-          image: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
+          # On PRs (load=true), use the local image ID to avoid registry pull attempts
+          image: ${{ inputs.push && format('{0}/{1}:{2}', inputs.registry, inputs.image, inputs.tag) || steps.build.outputs.imageid }}
           fail-build: true
           severity-cutoff: critical
           output-format: table
@@ -176,7 +179,8 @@ jobs:
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@v0.35.0
         with:
-          image-ref: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
+          # On PRs (load=true), use the local image ID to avoid registry pull attempts
+          image-ref: ${{ inputs.push && format('{0}/{1}:{2}', inputs.registry, inputs.image, inputs.tag) || steps.build.outputs.imageid }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
