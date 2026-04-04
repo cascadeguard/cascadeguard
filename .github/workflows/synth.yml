@@ -27,13 +27,13 @@ jobs:
 
       - name: Checkout cascadeguard (code)
         if: env.HAS_PAT_TOKEN == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: cascadeguard
 
       - name: Checkout state repo (config)
         if: env.HAS_PAT_TOKEN == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: craigedmunds/cascadeguard-state
           path: cascadeguard-state
