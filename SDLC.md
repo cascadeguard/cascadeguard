@@ -277,7 +277,36 @@ CI runs automatically on every PR and push to `main`:
 
 All checks must pass for a PR to be merge-eligible.
 
-## 11. Engineering Operations & Oversight
+## 11. Environments & Preview Deployments
+
+### Environment Strategy
+
+All changes must be testable in an environment that mirrors production before merging.
+
+| Environment | Purpose | Web URL | API URL |
+|---|---|---|---|
+| **Preview** | Per-PR ephemeral deployment for review and testing | `<pr-id>.preview.cascadeguard.com` | `<pr-id>.preview.api.cascadeguard.com` |
+| **Staging** | Pre-release validation, integration testing | `staging.cascadeguard.com` | `staging.api.cascadeguard.com` |
+| **Production** | Live environment | `cascadeguard.com` | `api.cascadeguard.com` |
+
+### Preview Deployment Requirements
+
+- Any PR that changes **web frontend** or **API backend** code must deploy **both components** to a preview environment. A single preview link is insufficient when the change touches either layer, because the web and API are coupled.
+- Preview links must be posted as a PR comment before requesting review.
+- Reviewers must not approve PRs with missing preview links for web/API changes.
+- Preview environments are automatically torn down when the PR is merged or closed.
+
+### Promotion Path
+
+```
+Preview → Staging → Production
+```
+
+- PRs are tested in preview before merge.
+- `main` is deployed to staging automatically after merge.
+- Production releases are promoted from staging after validation (see [Release Process](#6-release-process)).
+
+## 12. Engineering Operations & Oversight
 
 This section defines who is responsible for keeping engineering work flowing without requiring board intervention on routine operational matters.
 
