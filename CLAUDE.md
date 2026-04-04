@@ -44,6 +44,24 @@ This is the canonical process for how features move from idea to production.
 | ADRs | `docs/adr/` |
 | Contribution guide | `CONTRIBUTING.md` |
 
+## Private vs Public Artifacts
+
+This is a **public repository**. Keep private content out of it.
+
+**PRIVATE — never commit to this repo:**
+- Business strategy, pricing, and growth plans
+- Agent instructions and internal operational docs
+- Internal planning documents
+
+**Private docs live in `.ai/`** — this directory is local-only and gitignored. Never commit it.
+
+**PUBLIC — belongs in this repo:**
+- Source code and tests
+- SDLC process, technical ADRs, contribution guides
+- CI/CD configuration
+
+**Rejection policy:** Any PR that adds files to `.ai/` or `docs/plans/` must be rejected.
+
 ## Tech Stack
 
 - **Testing**: pytest (Python), vitest (TypeScript)
