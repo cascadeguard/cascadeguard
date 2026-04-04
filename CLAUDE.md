@@ -46,21 +46,19 @@ This is the canonical process for how features move from idea to production.
 
 ## Private vs Public Artifacts
 
-This is a **public repository**. Keep private content out of it.
+This is a **public open-source repository**. All content must be suitable for public consumption.
 
-**PRIVATE — never commit to this repo:**
-- Business strategy, pricing, and growth plans
-- Agent instructions and internal operational docs
-- Internal planning documents
+**NEVER create or commit to this repo:**
+- Business strategy, pricing, growth plans, or internal planning documents
+- Agent instructions, operational docs, or company-specific configuration
+- Any content from a private workspace or internal project directory
 
-**Private docs live in `.ai/`** — this directory is local-only and gitignored. Never commit it.
+These artifacts belong in the **private workspace root**, not here. If you need to reference internal context, do so without including the content.
 
-**PUBLIC — belongs in this repo:**
-- Source code and tests
+**Belongs in this repo:**
+- Source code, tests, and public documentation
 - SDLC process, technical ADRs, contribution guides
-- CI/CD configuration
-
-**Rejection policy:** Any PR that adds files to `.ai/` or `docs/plans/` must be rejected.
+- CI/CD configuration and build scripts
 
 ## Tech Stack
 
