@@ -103,6 +103,11 @@ name: build-image
         description: "Image name (from images.yaml)"
         required: true
         type: string
+      context:
+        description: "Docker build context path relative to repo root"
+        required: false
+        type: string
+        default: "."
       dockerfile:
         description: "Path to Dockerfile relative to repo root"
         required: true
@@ -158,7 +163,7 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
           push: ${{ inputs.push }}
           load: ${{ !inputs.push }}  # load into local daemon on PRs so scanners can find the image
@@ -211,8 +216,10 @@ def ci_workflow(images: list) -> str:
     """PR + push-to-main pipeline: build all images in a matrix."""
     matrix_items = []
     for img in images:
+        context = img.get("context", ".")
         matrix_items.append(
             f"            - name: {img['name']}\n"
+            f"              context: {context}\n"
             f"              dockerfile: {img['dockerfile']}\n"
             f"              registry: {img['registry']}\n"
             f"              image: {img['image']}\n"
@@ -258,6 +265,7 @@ jobs:
     uses: ./.github/workflows/build-image.yaml
     with:
       name: ${{{{ matrix.name }}}}
+      context: ${{{{ matrix.context }}}}
       dockerfile: ${{{{ matrix.dockerfile }}}}
       registry: ${{{{ matrix.registry }}}}
       image: ${{{{ matrix.image }}}}
@@ -370,8 +378,10 @@ def release_workflow(images: list) -> str:
     """Tag-triggered sign, push, and release-notes workflow."""
     matrix_items = []
     for img in images:
+        context = img.get("context", ".")
         matrix_items.append(
             f"            - name: {img['name']}\n"
+            f"              context: {context}\n"
             f"              dockerfile: {img['dockerfile']}\n"
             f"              registry: {img['registry']}\n"
             f"              image: {img['image']}\n"
@@ -406,6 +416,7 @@ jobs:
     uses: ./.github/workflows/build-image.yaml
     with:
       name: ${{{{ matrix.name }}}}
+      context: ${{{{ matrix.context }}}}
       dockerfile: ${{{{ matrix.dockerfile }}}}
       registry: ${{{{ matrix.registry }}}}
       image: ${{{{ matrix.image }}}}
