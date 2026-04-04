@@ -142,8 +142,9 @@ Branch naming: `<identifier>/<short-description>` (e.g., `42/add-vulnerability-s
 
 1. Automated checks run first: lint, type check, unit tests, integration tests, security scan.
 2. A maintainer reviews for correctness, architecture, and code quality.
-3. The reviewer comments on the PR. Author addresses feedback in new commits.
-4. Once approved, a maintainer merges to `main`. Contributors do not merge their own PRs.
+3. **Test adequacy review** — the reviewer verifies that the PR tests the right things, not just that tests exist. Check for edge cases, error paths, and that acceptance criteria are covered by tests.
+4. The reviewer comments on the PR. Author addresses feedback in new commits.
+5. Once approved, a maintainer merges to `main`. Contributors do not merge their own PRs.
 
 ### PR Rules
 
@@ -186,11 +187,13 @@ A change is complete when all of the following are true:
 
 - [ ] Code is merged to `main` with all CI passing.
 - [ ] PR was reviewed and approved by a maintainer.
+- [ ] Test adequacy confirmed — reviewer verified the right behaviors are tested (see [Review](#review)).
 - [ ] No new lint warnings or type errors introduced.
 - [ ] Tests cover new or changed behavior.
 - [ ] Documentation updated if user-facing behavior changed.
 - [ ] ADR written if an architectural decision was made.
 - [ ] No known regressions in existing functionality.
+- [ ] PO acceptance validated for user-facing changes (PO confirms acceptance criteria are met).
 - [ ] Originating GitHub issue closed with a summary comment linking to the PR.
 
 ## 6. Release Process
@@ -273,3 +276,71 @@ CI runs automatically on every PR and push to `main`:
 4. **Build verification**: Ensure the application builds and container images are valid.
 
 All checks must pass for a PR to be merge-eligible.
+
+## 11. Engineering Operations & Oversight
+
+This section defines who is responsible for keeping engineering work flowing without requiring board intervention on routine operational matters.
+
+### Roles
+
+| Role | Operational Responsibility |
+|---|---|
+| **IC Engineer** | Own CI green status, merge conflict resolution, status updates on assigned issues |
+| **CTO** | PR review (24h SLA), blocker triage (<2h), daily issue health scans, unassigned issue triage |
+| **Product Owner** | Acceptance validation for user-facing changes (same day), backlog health (weekly) |
+| **Board** | Strategic review only — async daily summary + weekly sync |
+
+### Event-Driven Response (Tier 1)
+
+These status transitions require prompt action:
+
+| Event | Who Acts | Target Response Time |
+|---|---|---|
+| Issue moves to **blocked** | CTO | <2h — assess blocker, provide guidance or reassign |
+| PR marked **ready for review** (CI green) | CTO | <4h to begin review, <24h to complete |
+| Issue moves to **done** (user-facing) | PO | Same day — validate acceptance criteria |
+| Issue moves to **done** (technical) | CTO | Next daily review |
+
+### Scheduled Scans (Tier 2 — Daily)
+
+| Check | Owner | Action |
+|---|---|---|
+| Issues `in_progress` with no activity >24h | CTO | Request status update from assignee |
+| Issues `in_progress` with no activity >48h | CTO | Escalate or reassign |
+| Issues in `todo` with no assignee | CTO | Assign to appropriate engineer or escalate to board if unclear |
+| PRs open >48h with merge conflicts | CTO | Comment asking engineer to rebase |
+| PRs open >1 week with no review activity | CTO | Review or close with note to reopen when ready |
+| Issues `blocked` >48h | CTO | Escalate to CEO if unresolvable |
+
+### Engineer Responsibilities
+
+Engineers are expected to:
+
+- **Keep CI green** — do not request review until all checks pass.
+- **Resolve merge conflicts** — the PR author owns keeping their branch up to date with `main`.
+- **Update issue status** — move issues to `blocked` with a comment explaining the blocker. Do not leave issues silently stalled.
+- **Respond to review feedback** — address reviewer comments within 24h.
+
+### Board Cadence
+
+| Frequency | Activity |
+|---|---|
+| Daily (async, ~5 min) | Read CTO summary: what shipped, what's blocked, any escalations |
+| Weekly (30 min) | Roadmap review, approve `ready` items, discuss strategic risks |
+| On demand | CTO escalates items needing board input (budget, hiring, partnerships) |
+
+### RACI Matrix
+
+| Activity | Engineer | PO | CTO | Board |
+|---|---|---|---|---|
+| Keep CI green | **R** | — | I | — |
+| Resolve merge conflicts | **R** | — | I | — |
+| Update issue status when blocked | **R** | I | **A** | — |
+| Review PRs (technical) | C | — | **R/A** | — |
+| Acceptance validation (user-facing) | I | **R/A** | — | — |
+| Daily stuck-issue scan | — | — | **R** | I |
+| Triage unassigned todo issues | — | — | **R** | I |
+| Escalate strategic blockers | — | — | **R** | **A** |
+| Weekly roadmap review | — | C | **R** | **A** |
+
+R = Responsible, A = Accountable, C = Consulted, I = Informed
