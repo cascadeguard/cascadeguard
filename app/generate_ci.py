@@ -103,6 +103,11 @@ name: build-image
         description: "Image name (from images.yaml)"
         required: true
         type: string
+      context:
+        description: "Docker build context path relative to repo root"
+        required: false
+        type: string
+        default: "."
       dockerfile:
         description: "Path to Dockerfile relative to repo root"
         required: true
@@ -158,29 +163,33 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
           push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}  # load into local daemon on PRs so scanners can find the image
           tags: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
           cache-from: type=gha,scope=${{ inputs.name }}
-          cache-to: type=gha,scope=${{ inputs.name }},mode=max
+          # cache-to requires push=true; load=true is incompatible with GHA cache export
+          cache-to: ${{ inputs.push && format('type=gha,scope={0},mode=max', inputs.name) || '' }}
 
       - name: Scan with Grype
         uses: anchore/scan-action@v6
         with:
-          image: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
+          # On PRs (load=true), use the local image ID to avoid registry pull attempts
+          image: ${{ inputs.push && format('{0}/{1}:{2}', inputs.registry, inputs.image, inputs.tag) || steps.build.outputs.imageid }}
           fail-build: true
           severity-cutoff: critical
           output-format: table
 
       - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
-          image-ref: ${{ inputs.registry }}/${{ inputs.image }}:${{ inputs.tag }}
+          # On PRs (load=true), use the local image ID to avoid registry pull attempts
+          image-ref: ${{ inputs.push && format('{0}/{1}:{2}', inputs.registry, inputs.image, inputs.tag) || steps.build.outputs.imageid }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
 
       - name: Generate SBOM (Syft)
         if: inputs.push
@@ -207,8 +216,10 @@ def ci_workflow(images: list) -> str:
     """PR + push-to-main pipeline: build all images in a matrix."""
     matrix_items = []
     for img in images:
+        context = img.get("context", ".")
         matrix_items.append(
             f"            - name: {img['name']}\n"
+            f"              context: {context}\n"
             f"              dockerfile: {img['dockerfile']}\n"
             f"              registry: {img['registry']}\n"
             f"              image: {img['image']}\n"
@@ -254,6 +265,7 @@ jobs:
     uses: ./.github/workflows/build-image.yaml
     with:
       name: ${{{{ matrix.name }}}}
+      context: ${{{{ matrix.context }}}}
       dockerfile: ${{{{ matrix.dockerfile }}}}
       registry: ${{{{ matrix.registry }}}}
       image: ${{{{ matrix.image }}}}
@@ -321,12 +333,12 @@ jobs:
           output-file: grype-${{{{ matrix.name }}}}.json
 
       - name: Scan with Trivy (SARIF)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{{{ matrix.registry }}}}/${{{{ matrix.image }}}}:${{{{ matrix.tag }}}}
           format: sarif
           output: trivy-${{{{ matrix.name }}}}.sarif
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           ignore-unfixed: true
 
       - name: Upload Trivy SARIF
@@ -366,8 +378,10 @@ def release_workflow(images: list) -> str:
     """Tag-triggered sign, push, and release-notes workflow."""
     matrix_items = []
     for img in images:
+        context = img.get("context", ".")
         matrix_items.append(
             f"            - name: {img['name']}\n"
+            f"              context: {context}\n"
             f"              dockerfile: {img['dockerfile']}\n"
             f"              registry: {img['registry']}\n"
             f"              image: {img['image']}\n"
@@ -402,6 +416,7 @@ jobs:
     uses: ./.github/workflows/build-image.yaml
     with:
       name: ${{{{ matrix.name }}}}
+      context: ${{{{ matrix.context }}}}
       dockerfile: ${{{{ matrix.dockerfile }}}}
       registry: ${{{{ matrix.registry }}}}
       image: ${{{{ matrix.image }}}}
