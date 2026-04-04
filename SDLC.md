@@ -286,7 +286,7 @@ This section defines who is responsible for keeping engineering work flowing wit
 | Role | Operational Responsibility |
 |---|---|
 | **IC Engineer** | Own CI green status, merge conflict resolution, status updates on assigned issues |
-| **CTO** | PR review (24h SLA), blocker triage (<2h), daily issue health scans, unassigned issue triage |
+| **CTO** | PR review (1h SLA), blocker triage (<30min), hourly issue health scans, unassigned issue triage |
 | **Product Owner** | Acceptance validation for user-facing changes (same day), backlog health (weekly) |
 | **Board** | Strategic review only — async daily summary + weekly sync |
 
@@ -296,21 +296,21 @@ These status transitions require prompt action:
 
 | Event | Who Acts | Target Response Time |
 |---|---|---|
-| Issue moves to **blocked** | CTO | <2h — assess blocker, provide guidance or reassign |
-| PR marked **ready for review** (CI green) | CTO | <4h to begin review, <24h to complete |
-| Issue moves to **done** (user-facing) | PO | Same day — validate acceptance criteria |
-| Issue moves to **done** (technical) | CTO | Next daily review |
+| Issue moves to **blocked** | CTO | <30min — assess blocker, provide guidance or reassign |
+| PR marked **ready for review** (CI green) | CTO | <30min to begin review, <1h to complete |
+| Issue moves to **done** (user-facing) | PO | <1h — validate acceptance criteria |
+| Issue moves to **done** (technical) | CTO | Next hourly review |
 
-### Scheduled Scans (Tier 2 — Daily)
+### Scheduled Scans (Tier 2 — Hourly)
 
 | Check | Owner | Action |
 |---|---|---|
-| Issues `in_progress` with no activity >24h | CTO | Request status update from assignee |
-| Issues `in_progress` with no activity >48h | CTO | Escalate or reassign |
+| Issues `in_progress` with no activity >1h | CTO | Request status update from assignee |
+| Issues `in_progress` with no activity >2h | CTO | Escalate or reassign |
 | Issues in `todo` with no assignee | CTO | Assign to appropriate engineer or escalate to board if unclear |
-| PRs open >48h with merge conflicts | CTO | Comment asking engineer to rebase |
-| PRs open >1 week with no review activity | CTO | Review or close with note to reopen when ready |
-| Issues `blocked` >48h | CTO | Escalate to CEO if unresolvable |
+| PRs open >1h with merge conflicts | CTO | Comment asking engineer to rebase |
+| PRs open >4h with no review activity | CTO | Review or close with note to reopen when ready |
+| Issues `blocked` >2h | CTO | Escalate to CEO if unresolvable |
 
 ### Engineer Responsibilities
 
@@ -319,7 +319,7 @@ Engineers are expected to:
 - **Keep CI green** — do not request review until all checks pass.
 - **Resolve merge conflicts** — the PR author owns keeping their branch up to date with `main`.
 - **Update issue status** — move issues to `blocked` with a comment explaining the blocker. Do not leave issues silently stalled.
-- **Respond to review feedback** — address reviewer comments within 24h.
+- **Respond to review feedback** — address reviewer comments within 1h.
 
 ### Board Cadence
 

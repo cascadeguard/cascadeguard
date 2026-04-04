@@ -56,9 +56,9 @@ task test:all
    - A summary of what changed and why.
    - A test plan describing how reviewers can verify the change.
 3. **All CI checks must pass** before requesting review. Do not request review until CI is green.
-4. **Keep your branch up to date** — the PR author is responsible for resolving merge conflicts with `main`. PRs with unresolved conflicts for >48h will receive a reminder; PRs stale for >1 week may be closed.
+4. **Keep your branch up to date** — the PR author is responsible for resolving merge conflicts with `main`. PRs with unresolved conflicts for >1h will receive a reminder; PRs stale for >24h may be closed.
 5. **Review and approval** is required before merge. Do not merge your own PRs.
-6. **Respond to review feedback** within 24h. Address reviewer comments in new commits.
+6. **Respond to review feedback** within 1h. Address reviewer comments in new commits.
 7. **Squash or rebase** to keep history clean — avoid merge commits.
 
 ## Definition of Done
