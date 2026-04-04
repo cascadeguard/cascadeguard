@@ -549,5 +549,200 @@ class TestGenerateBuildWorkflow:
         assert result2 is False
 
 
+class TestActionsPinner:
+    """Unit tests for ActionsPinner."""
+
+    @pytest.fixture
+    def workflows_dir(self):
+        with TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def _write_workflow(self, workflows_dir, name, content):
+        p = workflows_dir / name
+        p.write_text(content)
+        return p
+
+    def test_pin_mutable_tag(self, workflows_dir):
+        """Mutable tag refs are replaced with SHA + comment."""
+        from app import ActionsPinner
+
+        wf = self._write_workflow(workflows_dir, "ci.yml", (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+        ))
+
+        fake_sha = "a" * 40
+
+        def fake_resolve(owner_repo, ref):
+            assert owner_repo == "actions/checkout"
+            assert ref == "v4"
+            return fake_sha
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = fake_resolve
+
+        summary = pinner.pin()
+        assert summary["pinned"] == 1
+        assert summary["already_pinned"] == 0
+        assert summary["skipped"] == 0
+
+        content = wf.read_text()
+        assert f"actions/checkout@{fake_sha} # v4" in content
+
+    def test_already_pinned_skipped_without_update(self, workflows_dir):
+        """Lines already pinned to a SHA are counted as already_pinned."""
+        from app import ActionsPinner
+
+        sha = "b" * 40
+        wf = self._write_workflow(workflows_dir, "ci.yml", (
+            "      - uses: actions/checkout@" + sha + " # v4\n"
+        ))
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        summary = pinner.pin(update=False)
+
+        assert summary["already_pinned"] == 1
+        assert summary["pinned"] == 0
+        # File unchanged
+        assert sha in wf.read_text()
+
+    def test_update_flag_repins_to_latest_sha(self, workflows_dir):
+        """--update re-pins already-pinned SHAs to the latest SHA for the same tag."""
+        from app import ActionsPinner
+
+        old_sha = "c" * 40
+        new_sha = "d" * 40
+
+        wf = self._write_workflow(workflows_dir, "ci.yml",
+            f"      - uses: actions/checkout@{old_sha} # v4\n"
+        )
+
+        def fake_resolve(owner_repo, ref):
+            assert ref == "v4"
+            return new_sha
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = fake_resolve
+
+        summary = pinner.pin(update=True)
+        assert summary["pinned"] == 1
+
+        content = wf.read_text()
+        assert new_sha in content
+        assert old_sha not in content
+        assert "# v4" in content
+
+    def test_dry_run_does_not_write(self, workflows_dir):
+        """--dry-run previews without writing."""
+        from app import ActionsPinner
+
+        original = "      - uses: actions/checkout@v4\n"
+        wf = self._write_workflow(workflows_dir, "ci.yml", original)
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = lambda owner_repo, ref: "e" * 40
+
+        summary = pinner.pin(dry_run=True)
+        assert summary["pinned"] == 1
+        # File unchanged
+        assert wf.read_text() == original
+
+    def test_local_action_skipped(self, workflows_dir):
+        """Local composite actions (./path) are skipped."""
+        from app import ActionsPinner
+
+        self._write_workflow(workflows_dir, "ci.yml",
+            "      - uses: ./.github/actions/my-action\n"
+        )
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        summary = pinner.pin()
+
+        assert summary["skipped"] == 1
+        assert summary["pinned"] == 0
+
+    def test_api_failure_skips_ref(self, workflows_dir):
+        """When GitHub API fails, the ref is counted as skipped and line unchanged."""
+        from app import ActionsPinner
+
+        original = "      - uses: actions/checkout@v4\n"
+        wf = self._write_workflow(workflows_dir, "ci.yml", original)
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = lambda owner_repo, ref: None  # simulate failure
+
+        summary = pinner.pin()
+        assert summary["skipped"] == 1
+        assert summary["pinned"] == 0
+        assert wf.read_text() == original
+
+    def test_multiple_actions_in_workflow(self, workflows_dir):
+        """Multiple uses: lines are all processed."""
+        from app import ActionsPinner
+
+        sha1 = "1" * 40
+        sha2 = "2" * 40
+        sha3 = "3" * 40
+
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "      - uses: actions/checkout@v4\n"
+            "      - uses: actions/setup-python@v5\n"
+            "      - uses: actions/upload-artifact@v4\n"
+        ))
+
+        shas = {"actions/checkout": sha1, "actions/setup-python": sha2, "actions/upload-artifact": sha3}
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = lambda owner_repo, ref: shas[owner_repo]
+
+        summary = pinner.pin()
+        assert summary["pinned"] == 3
+
+    def test_sha_cache_avoids_duplicate_api_calls(self, workflows_dir):
+        """Same action@ref is resolved only once (via internal cache)."""
+        from app import ActionsPinner
+        import urllib.request
+        import unittest.mock as mock
+
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "      - uses: actions/checkout@v4\n"
+            "      - uses: actions/checkout@v4\n"
+        ))
+
+        fake_sha = "f" * 40
+        fake_response = mock.MagicMock()
+        fake_response.read.return_value = f'{{"sha": "{fake_sha}"}}'.encode()
+        fake_response.__enter__ = lambda s: s
+        fake_response.__exit__ = mock.MagicMock(return_value=False)
+
+        call_count = {"n": 0}
+        original_urlopen = urllib.request.urlopen
+
+        def counting_urlopen(req, **kwargs):
+            call_count["n"] += 1
+            return fake_response
+
+        pinner = ActionsPinner(token="t", workflows_dir=workflows_dir)
+        with mock.patch("urllib.request.urlopen", side_effect=counting_urlopen):
+            pinner.pin()
+
+        assert call_count["n"] == 1
+
+    def test_cmd_actions_pin_missing_dir(self):
+        """cmd_actions_pin returns 1 when workflows dir does not exist."""
+        from app import cmd_actions_pin
+        import argparse
+
+        args = argparse.Namespace(
+            workflows_dir="/nonexistent/path/.github/workflows",
+            dry_run=False,
+            update=False,
+            github_token=None,
+        )
+        assert cmd_actions_pin(args) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
