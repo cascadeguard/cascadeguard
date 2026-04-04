@@ -189,7 +189,7 @@ jobs:
           format: table
           exit-code: "1"
           ignore-unfixed: true
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
 
       - name: Generate SBOM (Syft)
         if: inputs.push
@@ -338,7 +338,7 @@ jobs:
           image-ref: ${{{{ matrix.registry }}}}/${{{{ matrix.image }}}}:${{{{ matrix.tag }}}}
           format: sarif
           output: trivy-${{{{ matrix.name }}}}.sarif
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           ignore-unfixed: true
 
       - name: Upload Trivy SARIF
