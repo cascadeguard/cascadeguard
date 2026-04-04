@@ -1,0 +1,10 @@
+- id: block-sensitive-paths
+  name: Block sensitive paths
+  description: >
+    Rejects commits that include files from sensitive directories
+    (.ai/, docs/plans/, artifacts/). Configurable via the BLOCKED_PATHS
+    environment variable.
+  language: script
+  entry: hooks/pre-commit
+  stages: [pre-commit]
+  pass_filenames: false

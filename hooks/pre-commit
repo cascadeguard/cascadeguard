@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# CascadeGuard pre-commit hook — blocks sensitive paths before they enter git history.
+#
+# Blocked paths (overridable via BLOCKED_PATHS env var, space-separated):
+#   .ai/  docs/plans/  artifacts/
+#
+# Install (option A — recommended via pre-commit framework):
+#   pip install pre-commit && pre-commit install
+#
+# Install (option B — standalone):
+#   cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+BLOCKED_PATHS="${BLOCKED_PATHS:-.ai/ docs/plans/ artifacts/}"
+
+# Collect staged files
+staged_files=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$staged_files" ]; then
+  exit 0
+fi
+
+blocked_files=()
+while IFS= read -r file; do
+  for pattern in $BLOCKED_PATHS; do
+    # Strip trailing slash for prefix matching
+    prefix="${pattern%/}"
+    if [[ "$file" == "$prefix" || "$file" == "$prefix/"* ]]; then
+      blocked_files+=("$file")
+      break
+    fi
+  done
+done <<< "$staged_files"
+
+if [ ${#blocked_files[@]} -eq 0 ]; then
+  exit 0
+fi
+
+echo ""
+echo "❌  COMMIT BLOCKED — sensitive paths detected in staged files:"
+echo ""
+for f in "${blocked_files[@]}"; do
+  echo "    $f"
+done
+echo ""
+echo "These paths must not be committed to a public repository:"
+echo "  ${BLOCKED_PATHS}"
+echo ""
+echo "To unstage these files run:"
+for f in "${blocked_files[@]}"; do
+  echo "  git restore --staged \"$f\""
+done
+echo ""
+exit 1

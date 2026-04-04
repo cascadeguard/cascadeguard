@@ -13,6 +13,14 @@ Thank you for your interest in contributing to CascadeGuard! This document cover
    ```bash
    task setup
    ```
+4. Install the pre-commit hook to block sensitive paths:
+   ```bash
+   pip install pre-commit && pre-commit install
+   ```
+   Or standalone (no Python required):
+   ```bash
+   cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+   ```
 
 ## Branch Naming
 
@@ -42,6 +50,26 @@ All PRs must include tests for new or changed behavior. We follow a testing pyra
 Run the full suite before submitting:
 ```bash
 task test:all
+```
+
+### Pre-commit Hook
+
+A pre-commit hook blocks files in sensitive paths (`.ai/`, `docs/plans/`, `artifacts/`) from being committed. These directories must never enter git history in this public repository.
+
+The hook is installed as part of `pre-commit install` (option A above). To override the blocked paths, set the `BLOCKED_PATHS` environment variable (space-separated path prefixes):
+
+```bash
+BLOCKED_PATHS=".ai/ secrets/ private/" git commit -m "..."
+```
+
+To adopt this hook in another repo using the pre-commit framework, add the following stanza to that repo's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/cascadeguard/cascadeguard
+    rev: v<TAG>  # pin to a release tag
+    hooks:
+      - id: block-sensitive-paths
 ```
 
 ### Static Analysis
