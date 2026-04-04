@@ -43,6 +43,23 @@ This is the canonical process for how features move from idea to production.
 | SDLC process | `SDLC.md` |
 | ADRs | `docs/adr/` |
 | Contribution guide | `CONTRIBUTING.md` |
+| Project instructions (cross-repo) | [cascadeguard-docs/CLAUDE.md](https://github.com/cascadeguard/cascadeguard-docs/blob/main/CLAUDE.md) |
+
+## Private vs Public Artifacts
+
+This is a **public open-source repository**. All content must be suitable for public consumption.
+
+**NEVER create or commit to this repo:**
+- Business strategy, pricing, growth plans, or internal planning documents
+- Agent instructions, operational docs, or company-specific configuration
+- Any content from a private workspace or internal project directory
+
+These artifacts belong in the **private workspace root**, not here. If you need to reference internal context, do so without including the content.
+
+**Belongs in this repo:**
+- Source code, tests, and public documentation
+- SDLC process, technical ADRs, contribution guides
+- CI/CD configuration and build scripts
 
 ## Tech Stack
 

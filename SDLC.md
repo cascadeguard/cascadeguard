@@ -142,8 +142,9 @@ Branch naming: `<identifier>/<short-description>` (e.g., `42/add-vulnerability-s
 
 1. Automated checks run first: lint, type check, unit tests, integration tests, security scan.
 2. A maintainer reviews for correctness, architecture, and code quality.
-3. The reviewer comments on the PR. Author addresses feedback in new commits.
-4. Once approved, a maintainer merges to `main`. Contributors do not merge their own PRs.
+3. **Test adequacy review** — the reviewer verifies that the PR tests the right things, not just that tests exist. Check for edge cases, error paths, and that acceptance criteria are covered by tests.
+4. The reviewer comments on the PR. Author addresses feedback in new commits.
+5. Once approved, a maintainer merges to `main`. Contributors do not merge their own PRs.
 
 ### PR Rules
 
@@ -186,11 +187,13 @@ A change is complete when all of the following are true:
 
 - [ ] Code is merged to `main` with all CI passing.
 - [ ] PR was reviewed and approved by a maintainer.
+- [ ] Test adequacy confirmed — reviewer verified the right behaviors are tested (see [Review](#review)).
 - [ ] No new lint warnings or type errors introduced.
 - [ ] Tests cover new or changed behavior.
 - [ ] Documentation updated if user-facing behavior changed.
 - [ ] ADR written if an architectural decision was made.
 - [ ] No known regressions in existing functionality.
+- [ ] PO acceptance validated for user-facing changes (PO confirms acceptance criteria are met).
 - [ ] Originating GitHub issue closed with a summary comment linking to the PR.
 
 ## 6. Release Process
@@ -273,3 +276,101 @@ CI runs automatically on every PR and push to `main`:
 4. **Build verification**: Ensure the application builds and container images are valid.
 
 All checks must pass for a PR to be merge-eligible.
+
+## 11. Environments & Preview Deployments
+
+### Environment Strategy
+
+All changes must be testable in an environment that mirrors production before merging.
+
+| Environment | Purpose | Web URL | API URL |
+|---|---|---|---|
+| **Preview** | Per-PR ephemeral deployment for review and testing | `<pr-id>.preview.cascadeguard.com` | `<pr-id>.preview.api.cascadeguard.com` |
+| **Staging** | Pre-release validation, integration testing | `staging.cascadeguard.com` | `staging.api.cascadeguard.com` |
+| **Production** | Live environment | `cascadeguard.com` | `api.cascadeguard.com` |
+
+### Preview Deployment Requirements
+
+- Any PR that changes **web frontend** or **API backend** code must deploy **both components** to a preview environment. A single preview link is insufficient when the change touches either layer, because the web and API are coupled.
+- Preview links must be posted as a PR comment before requesting review.
+- Reviewers must not approve PRs with missing preview links for web/API changes.
+- Preview environments are automatically torn down when the PR is merged or closed.
+
+### Promotion Path
+
+```
+Preview → Staging → Production
+```
+
+- PRs are tested in preview before merge.
+- `main` is deployed to staging automatically after merge.
+- Production releases are promoted from staging after validation (see [Release Process](#6-release-process)).
+
+## 12. Engineering Operations & Oversight
+
+This section defines who is responsible for keeping engineering work flowing without requiring board intervention on routine operational matters.
+
+### Roles
+
+| Role | Operational Responsibility |
+|---|---|
+| **IC Engineer** | Own CI green status, merge conflict resolution, status updates on assigned issues |
+| **CTO** | PR review (1h SLA), blocker triage (<30min), hourly issue health scans, unassigned issue triage |
+| **Product Owner** | Acceptance validation for user-facing changes (<2h), backlog health (weekly) |
+| **Board** | Strategic review only — async daily summary + weekly sync |
+
+### Event-Driven Response (Tier 1)
+
+These status transitions require prompt action:
+
+| Event | Who Acts | Target Response Time |
+|---|---|---|
+| Issue moves to **blocked** | CTO | <30min — assess blocker, provide guidance or reassign |
+| PR marked **ready for review** (CI green) | CTO | <30min to begin review, <1h to complete |
+| Issue moves to **done** (user-facing) | PO | <1h — validate acceptance criteria |
+| Issue moves to **done** (technical) | CTO | Next hourly scan |
+
+### Scheduled Scans (Tier 2 — Hourly)
+
+| Check | Owner | Action |
+|---|---|---|
+| Issues `in_progress` with no activity >1h | CTO | Request status update from assignee |
+| Issues `in_progress` with no activity >2h | CTO | Escalate or reassign |
+| Issues in `todo` with no assignee | CTO | Assign to appropriate engineer or escalate to board if unclear |
+| PRs open >1h with merge conflicts | CTO | Comment asking engineer to rebase |
+| PRs open >4h with no review activity | CTO | Review or close with note to reopen when ready |
+| Issues `blocked` >2h | CTO | Escalate to CEO if unresolvable |
+
+### Engineer Responsibilities
+
+Engineers are expected to:
+
+- **Keep CI green** — do not request review until all checks pass.
+- **Resolve merge conflicts** — the PR author owns keeping their branch up to date with `main`.
+- **Update issue status** — move issues to `blocked` with a comment explaining the blocker. Do not leave issues silently stalled.
+- **Respond to review feedback** — address reviewer comments within 1h.
+- **Use clickable links for external references** — when referencing GitHub issues, PRs, external services, or any resource outside the current system, always use full clickable Markdown links (e.g. `[PR #46](https://github.com/cascadeguard/cascadeguard/pull/46)`). Never leave bare identifiers or plain-text URLs that readers cannot click to navigate to. Where the platform supports it, links to external systems should open in a new tab (use HTML `<a href="..." target="_blank">` when Markdown target control is unavailable).
+
+### Board Cadence
+
+| Frequency | Activity |
+|---|---|
+| Daily (async, ~5 min) | Read CTO summary: what shipped, what's blocked, any escalations |
+| Weekly (30 min) | Roadmap review, approve `ready` items, discuss strategic risks |
+| On demand | CTO escalates items needing board input (budget, hiring, partnerships) |
+
+### RACI Matrix
+
+| Activity | Engineer | PO | CTO | Board |
+|---|---|---|---|---|
+| Keep CI green | **R** | — | I | — |
+| Resolve merge conflicts | **R** | — | I | — |
+| Update issue status when blocked | **R** | I | **A** | — |
+| Review PRs (technical) | C | — | **R/A** | — |
+| Acceptance validation (user-facing) | I | **R/A** | — | — |
+| Daily stuck-issue scan | — | — | **R** | I |
+| Triage unassigned todo issues | — | — | **R** | I |
+| Escalate strategic blockers | — | — | **R** | **A** |
+| Weekly roadmap review | — | C | **R** | **A** |
+
+R = Responsible, A = Accountable, C = Consulted, I = Informed

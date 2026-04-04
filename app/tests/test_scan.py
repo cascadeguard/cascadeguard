@@ -103,7 +103,7 @@ class TestParseTrivy:
         findings = _parse_trivy_cves(trivy_file)
         assert len(findings) == 2
         assert findings[0]["cve"] == "CVE-2026-1234"
-        assert findings[0]["severity"] == "CRITICAL"
+        assert findings[0]["severity"] == "Critical"
         assert findings[1]["cve"] == "CVE-2026-9999"
 
     def test_parse_trivy_missing_file(self, tmp_path):
