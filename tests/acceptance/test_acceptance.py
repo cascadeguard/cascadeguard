@@ -608,5 +608,158 @@ class TestGenerateCICLI:
         assert (workspace / ".github" / "workflows").is_dir()
 
 
+ACTIONS_PIN_FIXTURE = Path(__file__).parent / "fixtures" / "actions-pin"
+
+
+class TestActionsPinCLI:
+    """Acceptance tests for `cascadeguard actions pin` using a fixture repo."""
+
+    @pytest.fixture
+    def repo(self):
+        """Copy the actions-pin fixture into a temp dir so tests can mutate it."""
+        import shutil
+
+        with TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / "repo"
+            shutil.copytree(ACTIONS_PIN_FIXTURE, dest)
+            yield dest
+
+    @staticmethod
+    def _run_actions_pin(repo, extra_args=None):
+        workflows_dir = repo / ".github" / "workflows"
+        cmd = [
+            sys.executable,
+            str(REPO_ROOT / "app" / "app.py"),
+            "actions", "pin",
+            "--workflows-dir", str(workflows_dir),
+        ]
+        if extra_args:
+            cmd.extend(extra_args)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GITHUB_TOKEN": ""},
+            cwd=str(repo),
+        )
+
+    def test_dry_run_reports_counts_without_modifying(self, repo):
+        """--dry-run prints summary but leaves files untouched."""
+        wf = repo / ".github" / "workflows" / "ci.yml"
+        original = wf.read_text()
+
+        result = self._run_actions_pin(repo, ["--dry-run"])
+        assert result.returncode == 0, f"Unexpected failure:\n{result.stderr}"
+        assert "Dry run" in result.stdout
+        assert "Actions pinned:" in result.stdout
+
+        # Files must be unchanged
+        assert wf.read_text() == original
+
+    def test_pin_with_mock_resolver(self, repo):
+        """End-to-end pin using ActionsPinner directly on the fixture repo."""
+        sys.path.insert(0, str(REPO_ROOT / "app"))
+        from app import ActionsPinner
+
+        workflows_dir = repo / ".github" / "workflows"
+        sha_map = {
+            "actions/checkout@v4": "a" * 40,
+            "actions/setup-python@v5": "b" * 40,
+            "actions/upload-artifact@v4": "c" * 40,
+            "github/super-linter@v6": "d" * 40,
+            "actions/setup-node@v4": "e" * 40,
+            "softprops/action-gh-release@v2": "f" * 40,
+        }
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = lambda owner_repo, ref: sha_map.get(f"{owner_repo}@{ref}")
+
+        summary = pinner.pin()
+
+        # ci.yml: checkout(x2), setup-python, upload-artifact, super-linter = 5 mutable
+        # release.yml: setup-node, action-gh-release = 2 mutable
+        # Total mutable pinned: 7
+        assert summary["pinned"] == 7
+        # release.yml checkout is already pinned to a SHA
+        assert summary["already_pinned"] == 1
+        # ci.yml has one local action (./.github/actions/local-lint)
+        assert summary["skipped"] == 1
+
+        # Verify ci.yml content
+        ci_content = (workflows_dir / "ci.yml").read_text()
+        assert f"actions/checkout@{'a' * 40} # v4" in ci_content
+        assert f"actions/setup-python@{'b' * 40} # v5" in ci_content
+        assert f"actions/upload-artifact@{'c' * 40} # v4" in ci_content
+        assert f"github/super-linter@{'d' * 40} # v6" in ci_content
+        # Local action untouched
+        assert "./.github/actions/local-lint" in ci_content
+
+        # Verify release.yml content
+        release_content = (workflows_dir / "release.yml").read_text()
+        assert f"actions/setup-node@{'e' * 40} # v4" in release_content
+        assert f"softprops/action-gh-release@{'f' * 40} # v2" in release_content
+        # Already-pinned checkout SHA preserved (no update flag)
+        assert "b4ffde65f46336ab88eb53be808477a3936bae11" in release_content
+
+    def test_update_repins_existing_sha(self, repo):
+        """--update re-resolves already-pinned SHAs to the latest for their tag."""
+        sys.path.insert(0, str(REPO_ROOT / "app"))
+        from app import ActionsPinner
+
+        workflows_dir = repo / ".github" / "workflows"
+        new_checkout_sha = "1" * 40
+
+        def resolve(owner_repo, ref):
+            if owner_repo == "actions/checkout" and ref == "v4":
+                return new_checkout_sha
+            return None
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = resolve
+
+        summary = pinner.pin(update=True)
+
+        # The already-pinned checkout in release.yml should be re-pinned
+        release_content = (workflows_dir / "release.yml").read_text()
+        assert f"actions/checkout@{new_checkout_sha} # v4" in release_content
+        assert "b4ffde65f46336ab88eb53be808477a3936bae11" not in release_content
+
+    def test_idempotent_second_pin(self, repo):
+        """Pinning twice without --update reports all as already_pinned."""
+        sys.path.insert(0, str(REPO_ROOT / "app"))
+        from app import ActionsPinner
+
+        workflows_dir = repo / ".github" / "workflows"
+
+        pinner = ActionsPinner(token="", workflows_dir=workflows_dir)
+        pinner._resolve_sha = lambda owner_repo, ref: "a" * 40
+
+        # First pass — pin everything
+        pinner.pin()
+
+        # Second pass — all should be already_pinned
+        pinner2 = ActionsPinner(token="", workflows_dir=workflows_dir)
+        summary = pinner2.pin(update=False)
+
+        assert summary["pinned"] == 0
+        assert summary["already_pinned"] >= 7
+        assert summary["skipped"] >= 1
+
+    def test_missing_workflows_dir_exits_nonzero(self):
+        """CLI exits non-zero when the workflows directory does not exist."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "app" / "app.py"),
+                "actions", "pin",
+                "--workflows-dir", "/nonexistent/.github/workflows",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "not found" in result.stderr.lower() or "error" in result.stderr.lower()
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
