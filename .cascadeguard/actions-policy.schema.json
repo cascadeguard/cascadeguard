@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cascadeguard.dev/schemas/actions-policy/v1",
+  "title": "CascadeGuard Actions Policy",
+  "description": "Schema for .cascadeguard/actions-policy.yaml — defines which GitHub Actions are permitted in CI workflows.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1",
+      "description": "Schema version. Must be '1'."
+    },
+    "default": {
+      "type": "string",
+      "enum": ["allow", "deny"],
+      "default": "deny",
+      "description": "Disposition for actions not matched by any allow/deny rule. 'deny' (recommended) blocks unrecognised actions; 'allow' permits them."
+    },
+    "delay_window_hours": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Grace period (hours) before a newly-introduced action reference triggers a violation. Set to 0 to enforce immediately. Useful with bot-authored PRs that introduce new dependencies."
+    },
+    "allowed_owners": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "default": [],
+      "description": "GitHub organisation or user names whose actions are trusted by default. Any action published under a listed owner is allowed regardless of the 'default' setting. Example: ['actions', 'aws-actions', 'docker']."
+    },
+    "allowed_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$"
+      },
+      "uniqueItems": true,
+      "default": [],
+      "description": "Specific action references that are explicitly allowed (owner/repo). Takes precedence over 'denied_actions'. Example: ['actions/checkout', 'docker/login-action']."
+    },
+    "denied_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$"
+      },
+      "uniqueItems": true,
+      "default": [],
+      "description": "Specific action references that are explicitly denied (owner/repo), regardless of other rules. Use to block known-bad or deprecated actions."
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$",
+            "description": "Action reference to exempt (owner/repo)."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Human-readable justification for the exception. Required for audit trail."
+          },
+          "expires": {
+            "type": "string",
+            "format": "date",
+            "description": "Optional ISO-8601 date (YYYY-MM-DD) after which this exception is no longer valid."
+          }
+        }
+      },
+      "default": [],
+      "description": "One-off exceptions that override the default policy for a specific action. Each exception requires a documented reason."
+    }
+  }
+}
