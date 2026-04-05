@@ -1254,16 +1254,61 @@ def cmd_actions_pin(args) -> int:
 
 
 def cmd_actions_audit(args) -> int:
-    """Audit workflow files against an actions-policy.yaml."""
-    from actions_policy import load_policy, PolicyAuditor, PolicyError
+    """Audit workflow files for pinning status and optionally against a policy."""
+    import json as _json
+    from actions_policy import (
+        load_policy,
+        PolicyAuditor,
+        PolicyError,
+        scan_pinning_status,
+    )
 
-    policy_path = Path(args.policy)
     workflows_dir = Path(args.workflows_dir)
+    fmt = getattr(args, "format", "text")
+    policy_path_str: Optional[str] = getattr(args, "policy", None)
 
     if not workflows_dir.exists():
         print(f"Error: workflows directory not found: {workflows_dir}", file=sys.stderr)
         return 1
 
+    # ── Mode A: pinning-only audit (no policy supplied) ────────────────────
+    if not policy_path_str:
+        refs = scan_pinning_status(workflows_dir)
+        mutable = [r for r in refs if r.mutable]
+
+        if fmt == "json":
+            data: dict = {
+                "passed": len(mutable) == 0,
+                "summary": {
+                    "pinned": sum(1 for r in refs if r.status == "pinned"),
+                    "tag":    sum(1 for r in refs if r.status == "tag"),
+                    "branch": sum(1 for r in refs if r.status == "branch"),
+                    "local":  sum(1 for r in refs if r.status == "local"),
+                },
+                "refs": [r.as_dict() for r in refs],
+            }
+            print(_json.dumps(data, indent=2))
+        else:
+            _STATUS_LABEL = {
+                "pinned": "✓ pinned",
+                "tag":    "✗ tag   ",
+                "branch": "✗ branch",
+                "local":  "  local ",
+            }
+            for r in refs:
+                label = _STATUS_LABEL.get(r.status, r.status)
+                print(f"  {label}  {r.action}@{r.ref}  ({r.workflow_file}:{r.line_number})")
+            if mutable:
+                print(f"\nAudit FAILED — {len(mutable)} mutable reference(s) found.")
+            else:
+                n_pinned = sum(1 for r in refs if r.status == "pinned")
+                n_local  = sum(1 for r in refs if r.status == "local")
+                print(f"\nAudit PASSED — {n_pinned} pinned, {n_local} local.")
+
+        return 1 if mutable else 0
+
+    # ── Mode B: policy audit ────────────────────────────────────────────────
+    policy_path = Path(policy_path_str)
     try:
         policy = load_policy(policy_path)
     except PolicyError as exc:
@@ -1273,21 +1318,42 @@ def cmd_actions_audit(args) -> int:
     auditor = PolicyAuditor(policy)
     result = auditor.audit(workflows_dir)
 
-    if result.violations:
-        print(f"Policy audit FAILED — {len(result.violations)} violation(s):\n")
-        for v in result.violations:
-            print(f"  {v}")
-        print(
-            f"\n{result.allowed} action(s) passed, "
-            f"{result.skipped} skipped (local/composite)."
-        )
-        return 1
+    if fmt == "json":
+        data = {
+            "passed": result.passed,
+            "summary": {
+                "violations": len(result.violations),
+                "allowed":    result.allowed,
+                "skipped":    result.skipped,
+            },
+            "violations": [
+                {
+                    "workflow_file": v.workflow_file,
+                    "line_number":   v.line_number,
+                    "action":        v.action,
+                    "ref":           v.ref,
+                    "reason":        v.reason,
+                }
+                for v in result.violations
+            ],
+        }
+        print(_json.dumps(data, indent=2))
+    else:
+        if result.violations:
+            print(f"Policy audit FAILED — {len(result.violations)} violation(s):\n")
+            for v in result.violations:
+                print(f"  {v}")
+            print(
+                f"\n{result.allowed} action(s) passed, "
+                f"{result.skipped} skipped (local/composite)."
+            )
+        else:
+            print(
+                f"Policy audit PASSED — {result.allowed} action(s) checked, "
+                f"{result.skipped} skipped."
+            )
 
-    print(
-        f"Policy audit PASSED — {result.allowed} action(s) checked, "
-        f"{result.skipped} skipped."
-    )
-    return 0
+    return 0 if result.passed else 1
 
 
 def cmd_actions_policy_init(args) -> int:
@@ -1528,17 +1594,30 @@ Commands:
     # actions audit
     actions_audit = actions_sub.add_parser(
         "audit",
-        help="Audit workflow files against an actions-policy.yaml",
+        help="Audit workflow files for pinning status (and optionally against a policy)",
     )
     actions_audit.add_argument(
         "--policy",
-        default=".cascadeguard/actions-policy.yaml",
-        help="Path to policy file (default: .cascadeguard/actions-policy.yaml)",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to an actions-policy.yaml file. "
+            "When supplied, validates each action against the policy allow-list. "
+            "When omitted, reports the pinning status of every action "
+            "(exit 1 if any mutable refs found)."
+        ),
     )
     actions_audit.add_argument(
         "--workflows-dir",
         default=".github/workflows",
         help="Path to workflows directory (default: .github/workflows)",
+    )
+    actions_audit.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        metavar="FORMAT",
+        help="Output format: text (default) or json",
     )
 
     # actions policy
