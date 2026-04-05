@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: block-sensitive-paths
+        name: Block sensitive paths
+        language: script
+        entry: hooks/pre-commit
+        stages: [pre-commit]
+        pass_filenames: false
