@@ -2,9 +2,10 @@
 CascadeGuard — GitHub Actions policy enforcement.
 
 Provides:
-  PolicyAuditor   — validates workflow files against an actions-policy.yaml
-  load_policy     — loads and validates a policy file
-  init_policy     — writes a starter policy file to disk
+  scan_pinning_status — scan workflows and report pinning status per action
+  PolicyAuditor       — validates workflow files against an actions-policy.yaml
+  load_policy         — loads and validates a policy file
+  init_policy         — writes a starter policy file to disk
 
 Policy file schema: .cascadeguard/actions-policy.schema.json
 
@@ -36,6 +37,8 @@ _USES_RE = re.compile(
     r'^(\s*(?:-\s+)?uses:\s+)([^@\n\s]+)@([^\s\n#]+)(.*?)$'
 )
 
+_SHA_RE = re.compile(r'^[0-9a-f]{40}$')
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -65,6 +68,83 @@ class AuditResult:
     @property
     def passed(self) -> bool:
         return len(self.violations) == 0
+
+
+@dataclass
+class ActionRef:
+    """A single action reference found in a workflow file."""
+    workflow_file: str
+    line_number: int
+    action: str
+    ref: str
+    status: str  # "pinned" | "tag" | "branch" | "local"
+
+    @property
+    def mutable(self) -> bool:
+        """True if the ref is mutable (tag or branch — not SHA-pinned)."""
+        return self.status in {"tag", "branch"}
+
+    def as_dict(self) -> dict:
+        return {
+            "workflow_file": self.workflow_file,
+            "line_number": self.line_number,
+            "action": self.action,
+            "ref": self.ref,
+            "status": self.status,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Pinning-status scan (no policy required)
+# ---------------------------------------------------------------------------
+
+def _classify_ref(action: str, ref: str) -> str:
+    """
+    Classify a ref as 'pinned', 'tag', 'branch', or 'local'.
+
+    - local:  relative path or no owner/repo
+    - pinned: 40-char lowercase hex SHA
+    - tag:    version-like string (starts with 'v' or digit with dots)
+    - branch: everything else (main, master, develop, …)
+    """
+    if action.startswith("./") or "/" not in action:
+        return "local"
+    if _SHA_RE.match(ref):
+        return "pinned"
+    # Heuristic: version tags start with 'v' or a digit followed by a dot
+    if ref.startswith("v") or (ref and ref[0].isdigit() and "." in ref):
+        return "tag"
+    return "branch"
+
+
+def scan_pinning_status(workflows_dir: Path) -> List[ActionRef]:
+    """
+    Scan all workflow files in *workflows_dir* and return the pinning
+    status of every action reference found.
+
+    Each entry is an ActionRef with status: 'pinned' | 'tag' | 'branch' | 'local'.
+    """
+    refs: List[ActionRef] = []
+    patterns = list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml"))
+    for wf_path in sorted(patterns):
+        try:
+            lines = wf_path.read_text().splitlines()
+        except OSError:
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            m = _USES_RE.match(line)
+            if not m:
+                continue
+            _, action, ref, _ = m.groups()
+            status = _classify_ref(action, ref)
+            refs.append(ActionRef(
+                workflow_file=str(wf_path),
+                line_number=lineno,
+                action=action,
+                ref=ref,
+                status=status,
+            ))
+    return refs
 
 
 # ---------------------------------------------------------------------------

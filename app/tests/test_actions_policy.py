@@ -12,12 +12,14 @@ import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from actions_policy import (
+    ActionRef,
     AuditResult,
     PolicyAuditor,
     PolicyError,
     PolicyViolation,
     init_policy,
     load_policy,
+    scan_pinning_status,
 )
 
 
@@ -337,3 +339,98 @@ class TestPolicyViolationStr:
         assert "ci.yml:12" in s
         assert "bad/action@v1" in s
         assert "denied" in s
+
+
+# ---------------------------------------------------------------------------
+# scan_pinning_status / ActionRef
+# ---------------------------------------------------------------------------
+
+class TestScanPinningStatus:
+
+    SHA = "a" * 40
+
+    def _write_workflow(self, workflows_dir: Path, name: str, uses_lines: list) -> Path:
+        wf = workflows_dir / name
+        lines = ["on: [push]", "jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps:"]
+        for uses in uses_lines:
+            lines.append(f"      - uses: {uses}")
+        wf.write_text("\n".join(lines))
+        return wf
+
+    def test_sha_pinned_classified_as_pinned(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", [f"actions/checkout@{self.SHA}"])
+        refs = scan_pinning_status(wf_dir)
+        assert len(refs) == 1
+        assert refs[0].status == "pinned"
+        assert refs[0].mutable is False
+
+    def test_version_tag_classified_as_tag(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", ["actions/checkout@v4"])
+        refs = scan_pinning_status(wf_dir)
+        assert refs[0].status == "tag"
+        assert refs[0].mutable is True
+
+    def test_numeric_version_classified_as_tag(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", ["actions/checkout@4.1.0"])
+        refs = scan_pinning_status(wf_dir)
+        assert refs[0].status == "tag"
+
+    def test_branch_ref_classified_as_branch(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", ["actions/checkout@main"])
+        refs = scan_pinning_status(wf_dir)
+        assert refs[0].status == "branch"
+        assert refs[0].mutable is True
+
+    def test_local_action_classified_as_local(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", ["./actions/my-action@v1"])
+        refs = scan_pinning_status(wf_dir)
+        assert refs[0].status == "local"
+        assert refs[0].mutable is False
+
+    def test_mixed_workflow_classified_correctly(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", [
+            f"actions/checkout@{self.SHA}",
+            "actions/setup-python@v5",
+            "org/action@main",
+        ])
+        refs = scan_pinning_status(wf_dir)
+        statuses = [r.status for r in refs]
+        assert statuses == ["pinned", "tag", "branch"]
+
+    def test_action_ref_as_dict(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", ["actions/checkout@v4"])
+        refs = scan_pinning_status(wf_dir)
+        d = refs[0].as_dict()
+        assert d["action"] == "actions/checkout"
+        assert d["ref"] == "v4"
+        assert d["status"] == "tag"
+        assert "line_number" in d
+        assert "workflow_file" in d
+
+    def test_scans_multiple_files(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        self._write_workflow(wf_dir, "ci.yml", ["actions/checkout@v4"])
+        self._write_workflow(wf_dir, "deploy.yml", ["actions/setup-python@v5"])
+        refs = scan_pinning_status(wf_dir)
+        assert len(refs) == 2
+
+    def test_empty_directory_returns_empty(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        refs = scan_pinning_status(wf_dir)
+        assert refs == []
