@@ -79,11 +79,26 @@ tasks:
           fi
         silent: true
 
+  hooks:install:
+    desc: "Install git hooks"
+    cmds:
+      - cmd: |
+          if [ -n "$CI" ]; then
+            echo "CI environment detected, skipping git hook installation"
+          else
+            echo "Installing pre-commit hook..."
+            cp hooks/pre-commit .git/hooks/pre-commit
+            chmod +x .git/hooks/pre-commit
+            echo "✅ Pre-commit hook installed"
+          fi
+        silent: true
+
   setup:
     desc: "Set up CascadeGuard development environment"
     cmds:
       - task: app:setup
       - task: cdk8s:setup
+      - task: hooks:install
 
   # Test setup and execution (code-only, no state required)
   test:unit:setup:

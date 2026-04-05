@@ -36,6 +36,3 @@ Thumbs.db
 
 # Internal project docs (local workspace only)
 .ai/
-
-# Private planning docs must not be in public repo
-docs/plans/

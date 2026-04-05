@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-BLOCKED_PATHS="${BLOCKED_PATHS:-.ai/ docs/plans/ artifacts/}"
+BLOCKED_PATHS="${BLOCKED_PATHS:-.ai/ secrets/ private/ docs/}"
 
 # Collect staged files
 staged_files=$(git diff --cached --name-only --diff-filter=ACM)
