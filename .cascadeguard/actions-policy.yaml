@@ -1,0 +1,25 @@
+# CascadeGuard Actions Policy
+# Schema: https://cascadeguard.dev/schemas/actions-policy/v1
+#
+# All external GitHub Actions used in this repository must appear in
+# allowed_actions or be published by a trusted owner in allowed_owners.
+
+version: "1"
+
+# Reject any action not explicitly permitted below.
+default: deny
+
+# GitHub organisations whose actions are trusted by default.
+allowed_owners:
+  - actions       # github.com/actions/*
+  - docker        # github.com/docker/*
+
+# Specific actions permitted by name (owner/repo).
+allowed_actions:
+  - arduino/setup-task
+
+# Actions that are always denied, even if the owner is trusted.
+denied_actions: []
+
+# One-off exceptions — each must include a 'reason'.
+exceptions: []

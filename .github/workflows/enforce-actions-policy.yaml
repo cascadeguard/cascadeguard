@@ -1,0 +1,50 @@
+# CascadeGuard — Actions Policy Enforcement
+#
+# Validates all workflow files against .cascadeguard/actions-policy.yaml
+# using the `cascadeguard actions audit` CLI.
+#
+# Runs on every pull request to main to prevent unpinned or disallowed
+# actions from being merged.
+
+name: Enforce Actions Policy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".cascadeguard/actions-policy.yaml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".cascadeguard/actions-policy.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit Actions Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install CascadeGuard
+        # Install from CAS-105 branch until the actions audit subcommand is
+        # published to PyPI. Switch to `pip install cascadeguard` once released.
+        run: |
+          pip install --quiet \
+            "git+https://github.com/cascadeguard/cascadeguard.git@CAS-105/actions-policy-schema-and-audit#subdirectory=app"
+
+      - name: Audit GitHub Actions policy
+        run: |
+          cascadeguard actions audit \
+            --policy .cascadeguard/actions-policy.yaml \
+            --workflows-dir .github/workflows
