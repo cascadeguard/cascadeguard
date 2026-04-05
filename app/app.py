@@ -3,15 +3,17 @@
 CascadeGuard — container image lifecycle tool.
 
 Commands:
-  validate        Validate images.yaml configuration
-  enrol           Enrol a new image in images.yaml
-  check           Check image and base image states
-  build           Trigger a build via GitHub Actions
-  deploy          Deploy via ArgoCD
-  test            Check build test results via GitHub Actions
-  pipeline        Run full pipeline (validate -> check -> build -> deploy -> test)
-  status          Show status of all images
-  actions pin     Pin GitHub Actions refs to full commit SHAs
+  validate              Validate images.yaml configuration
+  enrol                 Enrol a new image in images.yaml
+  check                 Check image and base image states
+  build                 Trigger a build via GitHub Actions
+  deploy                Deploy via ArgoCD
+  test                  Check build test results via GitHub Actions
+  pipeline              Run full pipeline (validate -> check -> build -> deploy -> test)
+  status                Show status of all images
+  actions pin           Pin GitHub Actions refs to full commit SHAs
+  actions audit         Audit workflow files against an actions-policy.yaml
+  actions policy init   Scaffold a starter actions-policy.yaml
 """
 import argparse
 import json
@@ -973,9 +975,73 @@ def cmd_actions_pin(args) -> int:
     return 0
 
 
+def cmd_actions_audit(args) -> int:
+    """Audit workflow files against an actions-policy.yaml."""
+    from actions_policy import load_policy, PolicyAuditor, PolicyError
+
+    policy_path = Path(args.policy)
+    workflows_dir = Path(args.workflows_dir)
+
+    if not workflows_dir.exists():
+        print(f"Error: workflows directory not found: {workflows_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        policy = load_policy(policy_path)
+    except PolicyError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    auditor = PolicyAuditor(policy)
+    result = auditor.audit(workflows_dir)
+
+    if result.violations:
+        print(f"Policy audit FAILED — {len(result.violations)} violation(s):\n")
+        for v in result.violations:
+            print(f"  {v}")
+        print(
+            f"\n{result.allowed} action(s) passed, "
+            f"{result.skipped} skipped (local/composite)."
+        )
+        return 1
+
+    print(
+        f"Policy audit PASSED — {result.allowed} action(s) checked, "
+        f"{result.skipped} skipped."
+    )
+    return 0
+
+
+def cmd_actions_policy_init(args) -> int:
+    """Scaffold a starter .cascadeguard/actions-policy.yaml."""
+    from actions_policy import init_policy
+
+    output_path = Path(args.output)
+    written = init_policy(output_path, force=args.force)
+    if written:
+        print(f"Created {output_path}")
+        print("Edit the file to customise allowed_owners, allowed_actions, and exceptions.")
+    else:
+        print(
+            f"{output_path} already exists. Use --force to overwrite.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def cmd_actions_policy(args) -> int:
+    """Dispatch 'actions policy' subcommands."""
+    return {"init": cmd_actions_policy_init}[args.policy_command](args)
+
+
 def cmd_actions(args) -> int:
     """Dispatch 'actions' subcommands."""
-    return {"pin": cmd_actions_pin}[args.actions_command](args)
+    return {
+        "pin":    cmd_actions_pin,
+        "audit":  cmd_actions_audit,
+        "policy": cmd_actions_policy,
+    }[args.actions_command](args)
 
 
 def cmd_status(args) -> int:
@@ -1161,6 +1227,45 @@ Commands:
     actions_pin.add_argument(
         "--github-token",
         help="GitHub token (or GITHUB_TOKEN env var)",
+    )
+
+    # actions audit
+    actions_audit = actions_sub.add_parser(
+        "audit",
+        help="Audit workflow files against an actions-policy.yaml",
+    )
+    actions_audit.add_argument(
+        "--policy",
+        default=".cascadeguard/actions-policy.yaml",
+        help="Path to policy file (default: .cascadeguard/actions-policy.yaml)",
+    )
+    actions_audit.add_argument(
+        "--workflows-dir",
+        default=".github/workflows",
+        help="Path to workflows directory (default: .github/workflows)",
+    )
+
+    # actions policy
+    actions_policy = actions_sub.add_parser(
+        "policy",
+        help="Manage actions-policy.yaml",
+    )
+    policy_sub = actions_policy.add_subparsers(dest="policy_command", metavar="subcommand")
+    policy_sub.required = True
+
+    policy_init = policy_sub.add_parser(
+        "init",
+        help="Scaffold a starter .cascadeguard/actions-policy.yaml",
+    )
+    policy_init.add_argument(
+        "--output",
+        default=".cascadeguard/actions-policy.yaml",
+        help="Output path (default: .cascadeguard/actions-policy.yaml)",
+    )
+    policy_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing policy file",
     )
 
     return parser
