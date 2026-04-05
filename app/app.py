@@ -950,6 +950,284 @@ def cmd_pipeline(args) -> int:
     return 0
 
 
+def _parse_grype_cves(grype_path: Path) -> List[Dict]:
+    """Parse Grype JSON output into a list of CVE findings."""
+    if not grype_path.exists():
+        return []
+    with open(grype_path) as f:
+        data = json.load(f)
+    findings = []
+    for match in data.get("matches", []):
+        vuln = match.get("vulnerability", {})
+        artifact = match.get("artifact", {})
+        cve_id = vuln.get("id", "UNKNOWN")
+        findings.append({
+            "cve": cve_id,
+            "severity": vuln.get("severity", "Unknown"),
+            "package": artifact.get("name", "unknown"),
+            "version": artifact.get("version", "unknown"),
+            "type": artifact.get("type", "unknown"),
+            "fix_versions": [
+                fv.get("version", "")
+                for fv in vuln.get("fix", {}).get("versions", [])
+            ],
+            "description": vuln.get("description", ""),
+            "url": vuln.get("dataSource", ""),
+            "scanner": "grype",
+        })
+    return findings
+
+
+def _parse_trivy_cves(trivy_path: Path) -> List[Dict]:
+    """Parse Trivy JSON output into a list of CVE findings."""
+    if not trivy_path.exists():
+        return []
+    with open(trivy_path) as f:
+        data = json.load(f)
+    findings = []
+    for result in data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            findings.append({
+                "cve": vuln.get("VulnerabilityID", "UNKNOWN"),
+                "severity": vuln.get("Severity", "Unknown").capitalize(),
+                "package": vuln.get("PkgName", "unknown"),
+                "version": vuln.get("InstalledVersion", "unknown"),
+                "type": result.get("Type", "unknown"),
+                "fix_versions": [vuln["FixedVersion"]] if vuln.get("FixedVersion") else [],
+                "description": vuln.get("Description", ""),
+                "url": vuln.get("PrimaryURL", ""),
+                "scanner": "trivy",
+            })
+    return findings
+
+
+def _deduplicate_findings(findings: List[Dict]) -> List[Dict]:
+    """Deduplicate by CVE+package, preferring grype, keeping highest severity."""
+    severity_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Negligible": 0, "Unknown": -1}
+    seen: Dict[str, Dict] = {}
+    for f in findings:
+        key = f"{f['cve']}:{f['package']}"
+        if key not in seen or severity_rank.get(f["severity"], -1) > severity_rank.get(seen[key]["severity"], -1):
+            seen[key] = f
+    return sorted(seen.values(), key=lambda x: (-severity_rank.get(x["severity"], -1), x["cve"]))
+
+
+def cmd_scan_report(args) -> int:
+    """Parse scanner output and write a diffable vulnerability report."""
+    grype_path = Path(args.grype) if args.grype else None
+    trivy_path = Path(args.trivy) if args.trivy else None
+
+    if not grype_path and not trivy_path:
+        print("Error: at least one of --grype or --trivy is required", file=sys.stderr)
+        return 1
+
+    findings = []
+    if grype_path:
+        findings.extend(_parse_grype_cves(grype_path))
+    if trivy_path:
+        findings.extend(_parse_trivy_cves(trivy_path))
+
+    deduped = _deduplicate_findings(findings)
+
+    # Write reports to the output directory
+    report_dir = Path(args.dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write JSON report (machine-readable, diffable)
+    json_report = {
+        "image": args.image,
+        "scan_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "summary": {
+            "critical": sum(1 for f in deduped if f["severity"] == "Critical"),
+            "high": sum(1 for f in deduped if f["severity"] == "High"),
+            "medium": sum(1 for f in deduped if f["severity"] == "Medium"),
+            "low": sum(1 for f in deduped if f["severity"] == "Low"),
+            "total": len(deduped),
+        },
+        "findings": [
+            {
+                "cve": f["cve"],
+                "severity": f["severity"],
+                "package": f["package"],
+                "version": f["version"],
+                "fix_versions": f["fix_versions"],
+            }
+            for f in deduped
+        ],
+    }
+
+    json_path = report_dir / "vulnerability-report.json"
+    with open(json_path, "w") as f:
+        json.dump(json_report, f, indent=2, sort_keys=False)
+        f.write("\n")
+
+    # Write markdown report (human-readable, diffable)
+    md_path = report_dir / "vulnerability-report.md"
+    with open(md_path, "w") as f:
+        summary = json_report["summary"]
+        f.write(f"# Vulnerability Report: {args.image}\n\n")
+        f.write(f"| Severity | Count |\n")
+        f.write(f"|----------|-------|\n")
+        f.write(f"| Critical | {summary['critical']} |\n")
+        f.write(f"| High     | {summary['high']} |\n")
+        f.write(f"| Medium   | {summary['medium']} |\n")
+        f.write(f"| Low      | {summary['low']} |\n")
+        f.write(f"| **Total**| **{summary['total']}** |\n\n")
+
+        if deduped:
+            f.write("## Findings\n\n")
+            f.write("| CVE | Severity | Package | Version | Fix Available |\n")
+            f.write("|-----|----------|---------|---------|---------------|\n")
+            for finding in deduped:
+                fix = ", ".join(finding["fix_versions"]) if finding["fix_versions"] else "No"
+                f.write(f"| {finding['cve']} | {finding['severity']} | {finding['package']} | {finding['version']} | {fix} |\n")
+        else:
+            f.write("No vulnerabilities found.\n")
+
+    print(f"Reports written to {report_dir}/")
+    print(f"  {json_path}")
+    print(f"  {md_path}")
+    print(f"  Total findings: {len(deduped)} ({json_report['summary']['critical']} critical, {json_report['summary']['high']} high)")
+    return 0
+
+
+def cmd_scan_issues(args) -> int:
+    """Create/update/reopen per-CVE GitHub issues from scanner output."""
+    grype_path = Path(args.grype) if args.grype else None
+    trivy_path = Path(args.trivy) if args.trivy else None
+
+    if not grype_path and not trivy_path:
+        print("Error: at least one of --grype or --trivy is required", file=sys.stderr)
+        return 1
+
+    token = args.github_token or os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        print("Error: GitHub token required (--github-token or GITHUB_TOKEN env var)", file=sys.stderr)
+        return 1
+
+    if not args.repo:
+        print("Error: GitHub repository required (--repo)", file=sys.stderr)
+        return 1
+
+    findings = []
+    if grype_path:
+        findings.extend(_parse_grype_cves(grype_path))
+    if trivy_path:
+        findings.extend(_parse_trivy_cves(trivy_path))
+
+    deduped = _deduplicate_findings(findings)
+
+    # Filter to critical and high only for issue creation
+    actionable = [f for f in deduped if f["severity"] in ("Critical", "High")]
+
+    if not actionable:
+        print("No critical or high vulnerabilities found. No issues to create.")
+        return 0
+
+    gh = GitHubActionsProvider(token=token, repo=args.repo)
+
+    # Fetch all open CVE issues in the repo
+    existing_issues = _fetch_cve_issues(gh, args.repo)
+
+    created = 0
+    updated = 0
+    reopened = 0
+
+    for finding in actionable:
+        cve = finding["cve"]
+        pkg = finding["package"]
+        severity = finding["severity"]
+        issue_title = f"{cve}: {pkg} ({severity.lower()})"
+
+        # Check for existing issue by CVE+package
+        existing = _find_existing_issue(existing_issues, cve, pkg)
+
+        fix_str = ", ".join(finding["fix_versions"]) if finding["fix_versions"] else "No fix available"
+        image_label = f"image:{args.image}"
+        severity_label = f"severity:{severity.lower()}"
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        body = (
+            f"## {cve}: {pkg}\n\n"
+            f"- **Severity:** {severity}\n"
+            f"- **Package:** {pkg} {finding['version']}\n"
+            f"- **Fix:** {fix_str}\n"
+            f"- **Affected image:** {args.image}"
+            + (f":{args.tag}" if args.tag else "")
+            + f"\n- **First detected:** {today}\n"
+        )
+        if finding.get("url"):
+            body += f"- **Reference:** {finding['url']}\n"
+
+        if existing and existing["state"] == "open":
+            # Add a comment noting re-detection with image info
+            comment_body = f"Re-detected on **{today}** in `{args.image}" + (f":{args.tag}" if args.tag else "") + f"`.\nPackage version: {finding['version']}. Fix: {fix_str}."
+            _gh_request(gh, "POST", f"/repos/{args.repo}/issues/{existing['number']}/comments", {"body": comment_body})
+            # Ensure image label exists
+            _ensure_label(gh, args.repo, existing["number"], image_label)
+            updated += 1
+        elif existing and existing["state"] == "closed":
+            # Reopen the issue
+            _gh_request(gh, "PATCH", f"/repos/{args.repo}/issues/{existing['number']}", {"state": "open"})
+            comment_body = f"Reopened on **{today}**: re-detected in `{args.image}" + (f":{args.tag}" if args.tag else "") + f"`.\nPackage version: {finding['version']}. Fix: {fix_str}."
+            _gh_request(gh, "POST", f"/repos/{args.repo}/issues/{existing['number']}/comments", {"body": comment_body})
+            _ensure_label(gh, args.repo, existing["number"], image_label)
+            reopened += 1
+        else:
+            # Create new issue
+            labels = ["cve", "automated", severity_label, image_label]
+            new_issue = _gh_request(gh, "POST", f"/repos/{args.repo}/issues", {
+                "title": issue_title,
+                "body": body,
+                "labels": labels,
+            })
+            if new_issue:
+                print(f"  Created issue #{new_issue.get('number')}: {issue_title}")
+            created += 1
+
+    print(f"\nScan issues summary: {created} created, {updated} updated, {reopened} reopened")
+    return 0
+
+
+def _gh_request(provider: GitHubActionsProvider, method: str, path: str, data: Optional[dict] = None) -> Optional[dict]:
+    """Make a GitHub API request using the provider's auth."""
+    try:
+        return provider._request(method, path, data)
+    except RuntimeError as exc:
+        print(f"  Warning: GitHub API error: {exc}", file=sys.stderr)
+        return None
+
+
+def _fetch_cve_issues(provider: GitHubActionsProvider, repo: str) -> List[Dict]:
+    """Fetch all open and closed CVE-labelled issues."""
+    issues = []
+    for state in ("open", "closed"):
+        page = 1
+        while True:
+            result = _gh_request(provider, "GET", f"/repos/{repo}/issues?labels=cve,automated&state={state}&per_page=100&page={page}")
+            if not result:
+                break
+            issues.extend(result)
+            if len(result) < 100:
+                break
+            page += 1
+    return issues
+
+
+def _find_existing_issue(issues: List[Dict], cve: str, package: str) -> Optional[Dict]:
+    """Find an existing issue matching CVE and package."""
+    for issue in issues:
+        title = issue.get("title", "")
+        if cve in title and package in title:
+            return issue
+    return None
+
+
+def _ensure_label(provider: GitHubActionsProvider, repo: str, issue_number: int, label: str):
+    """Add a label to an issue if it doesn't already have it."""
+    _gh_request(provider, "POST", f"/repos/{repo}/issues/{issue_number}/labels", {"labels": [label]})
+
+
 def cmd_actions_pin(args) -> int:
     """Pin mutable GitHub Actions refs to full commit SHAs."""
     token = getattr(args, 'github_token', None) or os.environ.get("GITHUB_TOKEN", "")
@@ -1045,14 +1323,16 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  validate    Validate images.yaml configuration
-  enrol       Enrol a new image in images.yaml
-  check       Check image and base image states
-  build       Trigger a build via GitHub Actions
-  deploy      Deploy via ArgoCD
-  test        Check build test results via GitHub Actions
-  pipeline    Run full pipeline (validate -> check -> build -> deploy -> test)
-  status      Show status of all images
+  validate      Validate images.yaml configuration
+  enrol         Enrol a new image in images.yaml
+  check         Check image and base image states
+  build         Trigger a build via GitHub Actions
+  deploy        Deploy via ArgoCD
+  test          Check build test results via GitHub Actions
+  pipeline      Run full pipeline (validate -> check -> build -> deploy -> test)
+  status        Show status of all images
+  scan-report   Parse scanner output, write diffable vulnerability reports
+  scan-issues   Create/update/reopen per-CVE GitHub issues from scan results
 """,
     )
 
@@ -1134,6 +1414,22 @@ Commands:
     # status
     sub.add_parser("status", help="Show status of all images")
 
+    # scan-report
+    scan_report = sub.add_parser("scan-report", help="Parse scanner output, write diffable vulnerability reports")
+    scan_report.add_argument("--grype", help="Path to Grype JSON results file")
+    scan_report.add_argument("--trivy", help="Path to Trivy JSON results file")
+    scan_report.add_argument("--image", required=True, help="Image name (for report metadata)")
+    scan_report.add_argument("--dir", required=True, help="Output directory for reports (e.g. images/alpine/reports)")
+
+    # scan-issues
+    scan_issues = sub.add_parser("scan-issues", help="Create/update/reopen per-CVE GitHub issues")
+    scan_issues.add_argument("--grype", help="Path to Grype JSON results file")
+    scan_issues.add_argument("--trivy", help="Path to Trivy JSON results file")
+    scan_issues.add_argument("--image", required=True, help="Image name")
+    scan_issues.add_argument("--tag", default="", help="Image tag")
+    scan_issues.add_argument("--repo", required=True, help="GitHub repository (e.g. org/repo)")
+    scan_issues.add_argument("--github-token", help="GitHub token (or GITHUB_TOKEN env var)")
+
     # actions
     actions = sub.add_parser("actions", help="GitHub Actions utilities")
     actions_sub = actions.add_subparsers(dest="actions_command", metavar="subcommand")
@@ -1179,6 +1475,8 @@ def main() -> int:
         "test": cmd_test,
         "pipeline": cmd_pipeline,
         "status": cmd_status,
+        "scan-report": cmd_scan_report,
+        "scan-issues": cmd_scan_issues,
         "actions": cmd_actions,
     }
 
