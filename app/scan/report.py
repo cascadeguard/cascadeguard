@@ -27,17 +27,11 @@ def _analyse_dockerfile(a: DiscoveredArtifact) -> ArtifactAnalysis:
             findings.append(f"{img} is pinned to digest")
         elif ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag (mutable)")
-            recommendations.append(
-                f"Pin to digest: docker pull {img} && "
-                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
-            )
+            recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
             risk = "high"
         else:
             findings.append(f"{img} uses a tag (mutable)")
-            recommendations.append(
-                f"Pin to digest: docker pull {img} && "
-                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
-            )
+            recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
             if risk != "high":
                 risk = "medium"
 
@@ -86,10 +80,7 @@ def _analyse_compose(a: DiscoveredArtifact) -> ArtifactAnalysis:
         if ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag")
             risk = "medium"
-        recommendations.append(
-            f"Pin to digest: docker pull {img} && "
-            f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
-        )
+        recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
 
     return ArtifactAnalysis(artifact=a, findings=findings,
                             recommendations=recommendations, risk_level=risk)
@@ -104,23 +95,19 @@ def _analyse_k8s(a: DiscoveredArtifact) -> ArtifactAnalysis:
     kind = a.details.get("resource_kind", "")
     findings.append(f"{kind} with {len(imgs)} container image(s)")
 
+    unpinned = [img for img in imgs if "@sha256:" not in img]
     for img in imgs:
         if "@sha256:" in img:
             continue
         if ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag")
             risk = "high"
-            recommendations.append(
-                f"Pin to digest: docker pull {img} && "
-                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
-            )
         else:
-            recommendations.append(
-                f"Pin to digest: docker pull {img} && "
-                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
-            )
             if risk == "info":
                 risk = "low"
+
+    if unpinned:
+        recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
 
     return ArtifactAnalysis(artifact=a, findings=findings,
                             recommendations=recommendations, risk_level=risk)
