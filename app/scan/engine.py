@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .discoverers import discover_all, _EXCLUDED_DIRS
 from .models import DiscoveredArtifact, ScanResult
-from .report import analyse, build_summary, format_text, format_json
+from .report import analyse, build_summary, format_text, format_markdown, format_json
 
 _KIND_LABELS = {
     "dockerfile": "Dockerfiles",
@@ -64,14 +64,22 @@ def run_scan(
     # --- Output ---
     if output_format == "json":
         output = format_json(result)
+        if output_file:
+            Path(output_file).write_text(output)
+            print(f"Report written to {output_file}")
+        else:
+            print(output)
     else:
-        output = format_text(result)
+        # Always write detailed markdown report
+        report_dir = root / ".cascadeguard"
+        report_dir.mkdir(exist_ok=True)
+        report_path = report_dir / "scan-report.md"
+        report_path.write_text(format_markdown(result))
 
-    if output_file:
-        Path(output_file).write_text(output)
-        print(f"Report written to {output_file}")
-    else:
-        print(output)
+        # Print compact summary to terminal
+        print(format_text(result))
+        print(f"  Full report: {report_path.relative_to(root)}")
+        print()
 
     # Exit 1 if any high-risk findings
     if summary.by_risk.get("high", 0) > 0:

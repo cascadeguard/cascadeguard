@@ -261,101 +261,158 @@ _RISK_ICONS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Kind-level action summaries (for the summary table)
+# ---------------------------------------------------------------------------
+
+_KIND_ACTIONS = {
+    "dockerfile": "cascadeguard images pin",
+    "actions": "cascadeguard actions pin",
+    "compose": "cascadeguard images pin",
+    "helm": "Pin tags in values.yaml",
+    "kustomize": "Add images transformer",
+    "k8s": "cascadeguard images pin",
+}
+
+
 def format_text(result: ScanResult) -> str:
-    """Format scan result using Rich for terminal display."""
+    """Format scan result as a compact Rich summary table for the terminal."""
     from io import StringIO
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
-    from rich.text import Text
 
     buf = StringIO()
-    console = Console(file=buf, force_terminal=True, width=120)
+    console = Console(file=buf, force_terminal=True, width=100)
 
     # Header
     console.print()
     console.print(Panel.fit(
-        f"[bold]CascadeGuard Scan Report[/bold]\n"
-        f"[dim]{result.root_dir}[/dim]\n"
-        f"{result.summary.total_discovered} artifacts discovered, "
-        f"{result.summary.total_selected} selected",
+        f"[bold]CascadeGuard Scan[/bold]  [dim]{result.root_dir}[/dim]",
         border_style="cyan",
     ))
     console.print()
 
-    # Group by kind
+    # Summary table
+    table = Table(show_edge=False, pad_edge=False, expand=True)
+    table.add_column("Kind", style="bold", min_width=20)
+    table.add_column("Found", justify="right", min_width=6)
+    table.add_column("Issues", justify="right", min_width=7)
+    table.add_column("Action", min_width=30)
+
     by_kind: dict[str, list[ArtifactAnalysis]] = {}
     for a in result.analysis:
         by_kind.setdefault(a.artifact.kind, []).append(a)
 
-    _RISK_STYLES = {
-        "high": "bold red",
-        "medium": "yellow",
-        "low": "dim yellow",
-        "info": "dim",
-    }
-    _RISK_ICONS = {
-        "high": "✖",
-        "medium": "⚠",
-        "low": "△",
-        "info": "ℹ",
-    }
+    total_found = 0
+    total_issues = 0
 
     for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
         group = by_kind.get(kind, [])
         if not group:
             continue
         label = _KIND_LABELS.get(kind, kind)
+        issues = sum(1 for a in group if a.risk_level != "info")
+        action = _KIND_ACTIONS.get(kind, "")
+
+        issue_style = "bold red" if issues > 0 else "green"
+        issue_text = str(issues) if issues > 0 else "✓"
+
+        table.add_row(
+            label,
+            str(len(group)),
+            f"[{issue_style}]{issue_text}[/{issue_style}]",
+            f"[dim]{action}[/dim]" if issues > 0 else "",
+        )
+        total_found += len(group)
+        total_issues += issues
+
+    table.add_section()
+    issue_style = "bold red" if total_issues > 0 else "green"
+    table.add_row(
+        "[bold]Total[/bold]",
+        f"[bold]{total_found}[/bold]",
+        f"[{issue_style}][bold]{total_issues}[/bold][/{issue_style}]",
+        "",
+    )
+
+    console.print(table)
+    console.print()
+
+    return buf.getvalue()
+
+
+def format_markdown(result: ScanResult) -> str:
+    """Format scan result as a detailed markdown report."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines: list[str] = []
+    lines.append(f"# CascadeGuard Scan Report")
+    lines.append(f"")
+    lines.append(f"- **Directory:** `{result.root_dir}`")
+    lines.append(f"- **Date:** {ts}")
+    lines.append(f"- **Artifacts:** {result.summary.total_discovered} discovered, "
+                 f"{result.summary.total_selected} selected")
+    lines.append(f"")
+
+    # Summary table
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Kind | Found | Issues | Action |")
+    lines.append("|------|------:|-------:|--------|")
+
+    by_kind: dict[str, list[ArtifactAnalysis]] = {}
+    for a in result.analysis:
+        by_kind.setdefault(a.artifact.kind, []).append(a)
+
+    for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
+        group = by_kind.get(kind, [])
+        if not group:
+            continue
+        label = _KIND_LABELS.get(kind, kind)
+        issues = sum(1 for a in group if a.risk_level != "info")
+        action = _KIND_ACTIONS.get(kind, "")
+        lines.append(f"| {label} | {len(group)} | {issues} | {action if issues else '✓'} |")
+
+    lines.append("")
+
+    # Detail sections per kind
+    for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
+        group = by_kind.get(kind, [])
+        if not group:
+            continue
+        label = _KIND_LABELS.get(kind, kind)
+        lines.append(f"## {label}")
+        lines.append("")
 
         actionable = [a for a in group if a.risk_level != "info"]
         info_only = [a for a in group if a.risk_level == "info"]
 
-        # Section header
-        console.print(f"[bold]{label}[/bold] ({len(group)})")
-
-        # Actionable items
         if actionable:
-            MAX_DETAIL = 5
-            for a in actionable[:MAX_DETAIL]:
-                style = _RISK_STYLES.get(a.risk_level, "")
-                icon = _RISK_ICONS.get(a.risk_level, " ")
-                console.print(f"  [{style}]{icon}[/{style}] {a.artifact.path}")
-                for f in a.findings:
-                    console.print(f"    [dim]· {f}[/dim]")
-                for r in a.recommendations:
-                    console.print(f"    [green]→ {r}[/green]")
-
-            remaining = actionable[MAX_DETAIL:]
-            if remaining:
-                paths = ", ".join(a.artifact.path for a in remaining)
-                console.print(f"  [yellow]⚠ ... and {len(remaining)} more:[/yellow] [dim]{paths}[/dim]")
+            for a in actionable:
+                icon = _RISK_ICONS.get(a.risk_level, "ℹ")
+                lines.append(f"### {icon} `{a.artifact.path}`")
+                lines.append("")
+                if a.findings:
+                    for f in a.findings:
+                        lines.append(f"- {f}")
+                    lines.append("")
+                if a.recommendations:
+                    lines.append("**Recommendations:**")
+                    lines.append("")
+                    for r in a.recommendations:
+                        lines.append(f"- `{r}`" if r.startswith("Run:") else f"- {r}")
+                    lines.append("")
 
         if info_only:
-            console.print(f"  [dim]ℹ {len(info_only)} with no findings[/dim]")
+            lines.append(f"<details><summary>{len(info_only)} with no findings</summary>")
+            lines.append("")
+            for a in info_only:
+                lines.append(f"- `{a.artifact.path}`")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
 
-        console.print()
-
-    # Summary bar
-    s = result.summary
-    parts = []
-    if s.by_risk.get("high", 0):
-        parts.append(f"[bold red]{s.by_risk['high']} high[/bold red]")
-    if s.by_risk.get("medium", 0):
-        parts.append(f"[yellow]{s.by_risk['medium']} medium[/yellow]")
-    if s.by_risk.get("low", 0):
-        parts.append(f"[dim yellow]{s.by_risk['low']} low[/dim yellow]")
-    if s.by_risk.get("info", 0):
-        parts.append(f"[dim]{s.by_risk['info']} info[/dim]")
-
-    if parts:
-        console.print(Panel.fit(
-            "  ".join(parts),
-            title="Summary",
-            border_style="dim",
-        ))
-    console.print()
-
-    return buf.getvalue()
+    return "\n".join(lines)
 
 
 def format_json(result: ScanResult) -> str:
