@@ -423,22 +423,30 @@ def format_markdown(result: ScanResult) -> str:
             # Detail: full findings + paths (collapsed)
             lines.append("<details><summary>Details</summary>")
             lines.append("")
+            lines.append("| Component | Path | Finding |")
+            lines.append("|-----------|------|---------|")
             for a in actionable:
-                lines.append(f"**{a.artifact.component_name}** — `{a.artifact.path}`")
-                for f in a.findings:
-                    lines.append(f"- {f}")
-                if len(a.recommendations) > 1:
-                    for r in a.recommendations:
-                        lines.append(f"- → {r}")
-                lines.append("")
+                name = a.artifact.component_name
+                path = a.artifact.path
+                if a.findings:
+                    # First finding gets the component name and path
+                    lines.append(f"| {name} | `{path}` | {a.findings[0]} |")
+                    # Subsequent findings: empty component/path columns
+                    for f in a.findings[1:]:
+                        lines.append(f"| | | {f} |")
+                else:
+                    lines.append(f"| {name} | `{path}` | |")
+            lines.append("")
             lines.append("</details>")
             lines.append("")
 
         if info_only:
             lines.append(f"<details><summary>{len(info_only)} with no findings</summary>")
             lines.append("")
+            lines.append("| Component | Path |")
+            lines.append("|-----------|------|")
             for a in info_only:
-                lines.append(f"- {a.artifact.component_name} — `{a.artifact.path}`")
+                lines.append(f"| {a.artifact.component_name} | `{a.artifact.path}` |")
             lines.append("")
             lines.append("</details>")
             lines.append("")
