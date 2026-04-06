@@ -744,5 +744,173 @@ class TestActionsPinner:
         assert cmd_actions_pin(args) == 1
 
 
+class TestCmdActionsAudit:
+    """CLI-level tests for cmd_actions_audit."""
+
+    @pytest.fixture
+    def workflows_dir(self, tmp_path):
+        wf_dir = tmp_path / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        return wf_dir
+
+    def _write_workflow(self, workflows_dir, name, content):
+        p = workflows_dir / name
+        p.write_text(content)
+        return p
+
+    def _make_args(self, workflows_dir, fmt="text", policy=None):
+        import argparse
+        return argparse.Namespace(
+            workflows_dir=str(workflows_dir),
+            format=fmt,
+            policy=policy,
+        )
+
+    def test_missing_workflows_dir_returns_1(self):
+        """Returns 1 when workflows directory does not exist."""
+        from app import cmd_actions_audit
+        import argparse
+
+        args = argparse.Namespace(
+            workflows_dir="/nonexistent/path/.github/workflows",
+            format="text",
+            policy=None,
+        )
+        assert cmd_actions_audit(args) == 1
+
+    def test_pinning_only_mode_pass(self, workflows_dir):
+        """All pinned refs -> exit 0."""
+        from app import cmd_actions_audit
+
+        sha = "a" * 40
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            f"      - uses: actions/checkout@{sha} # v4\n"
+        ))
+
+        args = self._make_args(workflows_dir)
+        assert cmd_actions_audit(args) == 0
+
+    def test_pinning_only_mode_fail(self, workflows_dir):
+        """Mutable tag ref -> exit 1."""
+        from app import cmd_actions_audit
+
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+        ))
+
+        args = self._make_args(workflows_dir)
+        assert cmd_actions_audit(args) == 1
+
+    def test_pinning_only_json_format(self, workflows_dir, capsys):
+        """--format json emits valid JSON with expected keys in pinning-only mode."""
+        import json
+        from app import cmd_actions_audit
+
+        sha = "b" * 40
+        self._write_workflow(workflows_dir, "ci.yml", (
+            f"      - uses: actions/setup-python@{sha} # v5\n"
+            "      - uses: actions/upload-artifact@v4\n"
+        ))
+
+        args = self._make_args(workflows_dir, fmt="json")
+        ret = cmd_actions_audit(args)
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+
+        assert "passed" in data
+        assert "summary" in data
+        assert "refs" in data
+        assert data["passed"] is False  # mutable ref present
+        assert ret == 1
+
+    def test_policy_mode_pass(self, workflows_dir, tmp_path):
+        """All actions allowed by policy -> exit 0."""
+        from app import cmd_actions_audit
+
+        sha = "c" * 40
+        self._write_workflow(workflows_dir, "ci.yml", (
+            f"      - uses: actions/checkout@{sha} # v4\n"
+        ))
+
+        policy_file = tmp_path / "actions-policy.yaml"
+        policy_file.write_text(
+            "version: '1'\n"
+            "default: deny\n"
+            "allowed_owners:\n"
+            "  - actions\n"
+        )
+
+        args = self._make_args(workflows_dir, policy=str(policy_file))
+        assert cmd_actions_audit(args) == 0
+
+    def test_policy_mode_fail(self, workflows_dir, tmp_path):
+        """Action violating policy -> exit 1."""
+        from app import cmd_actions_audit
+
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "      - uses: some-org/untrusted-action@v1\n"
+        ))
+
+        policy_file = tmp_path / "actions-policy.yaml"
+        policy_file.write_text(
+            "version: '1'\n"
+            "default: deny\n"
+            "allowed_owners:\n"
+            "  - actions\n"
+        )
+
+        args = self._make_args(workflows_dir, policy=str(policy_file))
+        assert cmd_actions_audit(args) == 1
+
+    def test_policy_mode_json_format(self, workflows_dir, tmp_path, capsys):
+        """--format json emits valid JSON with violations in policy mode."""
+        import json
+        from app import cmd_actions_audit
+
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "      - uses: bad-org/bad-action@v2\n"
+        ))
+
+        policy_file = tmp_path / "actions-policy.yaml"
+        policy_file.write_text(
+            "version: '1'\n"
+            "default: deny\n"
+            "allowed_owners:\n"
+            "  - actions\n"
+        )
+
+        args = self._make_args(workflows_dir, fmt="json", policy=str(policy_file))
+        ret = cmd_actions_audit(args)
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+
+        assert data["passed"] is False
+        assert len(data["violations"]) == 1
+        assert data["violations"][0]["action"] == "bad-org/bad-action"
+        assert ret == 1
+
+    def test_bad_policy_file_returns_1(self, workflows_dir, tmp_path):
+        """Invalid policy YAML -> exit 1 without crashing."""
+        from app import cmd_actions_audit
+
+        self._write_workflow(workflows_dir, "ci.yml", (
+            "      - uses: actions/checkout@v4\n"
+        ))
+
+        policy_file = tmp_path / "actions-policy.yaml"
+        policy_file.write_text(": invalid: yaml: content: [\n")
+
+        args = self._make_args(workflows_dir, policy=str(policy_file))
+        assert cmd_actions_audit(args) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
