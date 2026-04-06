@@ -1724,7 +1724,42 @@ Commands:
         help="Overwrite existing policy file",
     )
 
+    # scan
+    scan = sub.add_parser("scan", help="Discover and analyse container artifacts in a repository")
+    scan.add_argument(
+        "--dir",
+        default=".",
+        help="Root directory to scan (default: current directory)",
+    )
+    scan.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Scan all discovered artifacts without prompting",
+    )
+    scan.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    scan.add_argument(
+        "--output",
+        default=None,
+        help="Write results to file instead of stdout",
+    )
+
     return parser
+
+
+def cmd_scan(args) -> int:
+    """Run repository scan for container artifacts."""
+    from scan.engine import run_scan
+    return run_scan(
+        root=Path(args.dir),
+        non_interactive=args.non_interactive,
+        output_format=args.format,
+        output_file=args.output,
+    )
 
 
 def main() -> int:
@@ -1736,6 +1771,7 @@ def main() -> int:
         "pipeline": cmd_pipeline_dispatcher,
         "vuln":     cmd_vuln,
         "actions":  cmd_actions,
+        "scan":     cmd_scan,
     }
 
     return commands[args.command](args)

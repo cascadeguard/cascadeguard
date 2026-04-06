@@ -5,6 +5,7 @@ description = "CascadeGuard Dockerfile Analysis Tool"
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -21,3 +22,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["app", "actions_policy"]
+packages = ["scan"]

@@ -2,6 +2,30 @@
 
 Guardian of the container cascade. Event-driven image lifecycle management with Kargo and ArgoCD.
 
+## Quick Start — Scan Any Repository
+
+Run this in any project directory to install CascadeGuard and scan for container artifacts:
+
+```bash
+# macOS / Linux
+curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.ps1 | iex
+```
+
+This installs CascadeGuard to `~/.cascadeguard` (or `%LOCALAPPDATA%\cascadeguard` on Windows), adds it to your PATH, and runs `cascadeguard scan`. After that, `cascadeguard` is available as a regular command.
+
+```bash
+# Scan without installing (temp environment, cleaned up after)
+curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh -s -- --no-install
+
+# Non-interactive JSON output
+curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh -s -- --non-interactive --format json
+```
+
+Requires Python 3.11+.
+
 ## Overview
 
 CascadeGuard automates the process of monitoring base images, discovering Dockerfile dependencies, and orchestrating intelligent container image rebuilds through a GitOps workflow. It uses Kargo for orchestration and generates Kubernetes resources via CDK8s.
