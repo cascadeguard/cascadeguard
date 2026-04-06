@@ -191,6 +191,7 @@ A change is complete when all of the following are true:
 - [ ] No new lint warnings or type errors introduced.
 - [ ] Tests cover new or changed behavior.
 - [ ] Documentation updated if user-facing behavior changed.
+- [ ] How-to entry created or updated if user-facing behavior changed or a new integration was added (see [How-To Guide](https://github.com/cascadeguard/cascadeguard-docs/blob/main/docs/contributing/how-tos.md)).
 - [ ] ADR written if an architectural decision was made.
 - [ ] No known regressions in existing functionality.
 - [ ] PO acceptance validated for user-facing changes (PO confirms acceptance criteria are met).
