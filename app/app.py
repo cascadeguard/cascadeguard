@@ -772,6 +772,9 @@ def cmd_enrol(args) -> int:
     if args.rebuild_delay:
         new_image["rebuildDelay"] = args.rebuild_delay
 
+    if args.auto_rebuild:
+        new_image["autoRebuild"] = True
+
     images.append(new_image)
 
     with open(images_yaml, "w") as f:
@@ -1532,6 +1535,17 @@ Commands:
     images_enrol.add_argument("--dockerfile", help="Path to Dockerfile in source repo")
     images_enrol.add_argument("--branch", help="Source branch (default: main)")
     images_enrol.add_argument("--rebuild-delay", help="Rebuild delay (e.g. 7d)")
+    images_enrol.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
+    )
+    images_enrol.add_argument(
+        "--auto-rebuild",
+        action="store_true",
+        default=False,
+        help="Set autoRebuild: true in the generated images.yaml entry",
+    )
 
     # images check
     images_sub.add_parser("check", help="Check image and base image states")
