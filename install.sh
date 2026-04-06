@@ -342,7 +342,8 @@ do_install() {
 
   if [ -x "${VENV_BIN}/cascadeguard" ]; then
     info "Existing installation found, upgrading..."
-    "$VENV_BIN/pip" install --quiet --disable-pip-version-check --upgrade \
+    "$VENV_BIN/pip" install --quiet --disable-pip-version-check \
+      --force-reinstall --no-deps \
       "cascadeguard-tool @ git+${CASCADEGUARD_REPO}@${CASCADEGUARD_BRANCH}#subdirectory=app"
     ok "Upgraded cascadeguard-tool"
   else
