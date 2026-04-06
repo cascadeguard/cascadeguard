@@ -3,14 +3,16 @@
 CascadeGuard — container image lifecycle tool.
 
 Commands:
-  validate              Validate images.yaml configuration
-  enrol                 Enrol a new image in images.yaml
-  check                 Check image and base image states
-  build                 Trigger a build via GitHub Actions
-  deploy                Deploy via ArgoCD
-  test                  Check build test results via GitHub Actions
-  pipeline              Run full pipeline (validate -> check -> build -> deploy -> test)
-  status                Show status of all images
+  images validate       Validate images.yaml configuration
+  images enrol          Enrol a new image in images.yaml
+  images check          Check image and base image states
+  images status         Show status of all images
+  pipeline run          Run full pipeline (validate -> check -> build -> deploy -> test)
+  pipeline build        Trigger a build via GitHub Actions
+  pipeline deploy       Deploy via ArgoCD
+  pipeline test         Check build test results via GitHub Actions
+  vuln report           Parse scanner output, write diffable vulnerability reports
+  vuln issues           Create/update/reopen per-CVE GitHub issues
   actions pin           Pin GitHub Actions refs to full commit SHAs
   actions audit         Audit workflow files against an actions-policy.yaml
   actions policy init   Scaffold a starter actions-policy.yaml
@@ -1388,6 +1390,39 @@ def cmd_actions(args) -> int:
     }[args.actions_command](args)
 
 
+def cmd_images(args) -> int:
+    """Dispatch 'images' subcommands."""
+    return {
+        "validate": cmd_validate,
+        "enrol":    cmd_enrol,
+        "check":    cmd_check,
+        "status":   cmd_status,
+    }[args.images_command](args)
+
+
+def cmd_pipeline_run(args) -> int:
+    """Alias for the full pipeline runner (was cmd_pipeline)."""
+    return cmd_pipeline(args)
+
+
+def cmd_pipeline_dispatcher(args) -> int:
+    """Dispatch 'pipeline' subcommands."""
+    return {
+        "run":    cmd_pipeline_run,
+        "build":  cmd_build,
+        "deploy": cmd_deploy,
+        "test":   cmd_test,
+    }[args.pipeline_command](args)
+
+
+def cmd_vuln(args) -> int:
+    """Dispatch 'vuln' subcommands."""
+    return {
+        "report": cmd_scan_report,
+        "issues": cmd_scan_issues,
+    }[args.vuln_command](args)
+
+
 def cmd_status(args) -> int:
     """Show status of all images from state files."""
     state_dir = Path(args.state_dir)
@@ -1455,114 +1490,160 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  validate      Validate images.yaml configuration
-  enrol         Enrol a new image in images.yaml
-  check         Check image and base image states
-  build         Trigger a build via GitHub Actions
-  deploy        Deploy via ArgoCD
-  test          Check build test results via GitHub Actions
-  pipeline      Run full pipeline (validate -> check -> build -> deploy -> test)
-  status        Show status of all images
-  scan-report   Parse scanner output, write diffable vulnerability reports
-  scan-issues   Create/update/reopen per-CVE GitHub issues from scan results
+  images      Image lifecycle management
+  pipeline    CI/CD orchestration
+  vuln        Vulnerability management
+  actions     GitHub Actions utilities
 """,
-    )
-
-    parser.add_argument(
-        "--images-yaml",
-        default="images.yaml",
-        help="Path to images.yaml (default: images.yaml)",
-    )
-    parser.add_argument(
-        "--state-dir",
-        default="state",
-        help="Path to state directory (default: state)",
     )
 
     sub = parser.add_subparsers(dest="command", metavar="command")
     sub.required = True
 
-    # validate
-    sub.add_parser("validate", help="Validate images.yaml configuration")
+    # ---------------------------------------------------------------------------
+    # images — image lifecycle management
+    # ---------------------------------------------------------------------------
+    images = sub.add_parser("images", help="Image lifecycle management")
+    images.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
+    )
+    images.add_argument(
+        "--state-dir",
+        default="state",
+        help="Path to state directory (default: state)",
+    )
+    images_sub = images.add_subparsers(dest="images_command", metavar="subcommand")
+    images_sub.required = True
 
-    # enrol
-    enrol = sub.add_parser("enrol", help="Enrol a new image")
-    enrol.add_argument("--name", required=True, help="Image name")
-    enrol.add_argument("--registry", required=True, help="Registry (e.g. ghcr.io)")
-    enrol.add_argument(
+    # images validate
+    images_sub.add_parser("validate", help="Validate images.yaml configuration")
+
+    # images enrol
+    images_enrol = images_sub.add_parser("enrol", help="Enrol a new image")
+    images_enrol.add_argument("--name", required=True, help="Image name")
+    images_enrol.add_argument("--registry", required=True, help="Registry (e.g. ghcr.io)")
+    images_enrol.add_argument(
         "--repository", required=True, help="Repository (e.g. org/image)"
     )
-    enrol.add_argument("--provider", help="Source provider (github/gitlab)")
-    enrol.add_argument("--repo", help="Source repository (e.g. org/repo)")
-    enrol.add_argument("--dockerfile", help="Path to Dockerfile in source repo")
-    enrol.add_argument("--branch", help="Source branch (default: main)")
-    enrol.add_argument("--rebuild-delay", help="Rebuild delay (e.g. 7d)")
+    images_enrol.add_argument("--provider", help="Source provider (github/gitlab)")
+    images_enrol.add_argument("--repo", help="Source repository (e.g. org/repo)")
+    images_enrol.add_argument("--dockerfile", help="Path to Dockerfile in source repo")
+    images_enrol.add_argument("--branch", help="Source branch (default: main)")
+    images_enrol.add_argument("--rebuild-delay", help="Rebuild delay (e.g. 7d)")
 
-    # check
-    sub.add_parser("check", help="Check image and base image states")
+    # images check
+    images_sub.add_parser("check", help="Check image and base image states")
 
-    # build
-    build = sub.add_parser("build", help="Trigger a build via GitHub Actions")
-    build.add_argument("--image", required=True, help="Image name to build")
-    build.add_argument("--tag", default="latest", help="Image tag (default: latest)")
-    build.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
-    build.add_argument(
-        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    # images status
+    images_sub.add_parser("status", help="Show status of all images")
+
+    # ---------------------------------------------------------------------------
+    # pipeline — CI/CD orchestration
+    # ---------------------------------------------------------------------------
+    pipeline = sub.add_parser("pipeline", help="CI/CD orchestration")
+    pipeline_sub = pipeline.add_subparsers(dest="pipeline_command", metavar="subcommand")
+    pipeline_sub.required = True
+
+    # pipeline run (full pipeline)
+    pipeline_run = pipeline_sub.add_parser("run", help="Run full pipeline")
+    pipeline_run.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
     )
-
-    # deploy
-    deploy = sub.add_parser("deploy", help="Deploy via ArgoCD")
-    deploy.add_argument("--image", required=True, help="Image name to deploy")
-    deploy.add_argument("--app", required=True, help="ArgoCD application name")
-    deploy.add_argument("--argocd-server", help="ArgoCD server URL")
-    deploy.add_argument(
-        "--argocd-token", help="ArgoCD token (or ARGOCD_TOKEN env var)"
+    pipeline_run.add_argument(
+        "--state-dir",
+        default="state",
+        help="Path to state directory (default: state)",
     )
-
-    # test
-    test = sub.add_parser("test", help="Check build test results")
-    test.add_argument("--image", required=True, help="Image name to check")
-    test.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
-    test.add_argument(
-        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
-    )
-
-    # pipeline
-    pipeline = sub.add_parser("pipeline", help="Run full pipeline")
-    pipeline.add_argument("--image", help="Image name (optional)")
-    pipeline.add_argument(
+    pipeline_run.add_argument("--image", help="Image name (optional)")
+    pipeline_run.add_argument(
         "--tag", default="latest", help="Image tag (default: latest)"
     )
-    pipeline.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
-    pipeline.add_argument(
+    pipeline_run.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
+    pipeline_run.add_argument(
         "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
     )
-    pipeline.add_argument("--app", help="ArgoCD application name")
-    pipeline.add_argument("--argocd-server", help="ArgoCD server URL")
-    pipeline.add_argument(
+    pipeline_run.add_argument("--app", help="ArgoCD application name")
+    pipeline_run.add_argument("--argocd-server", help="ArgoCD server URL")
+    pipeline_run.add_argument(
         "--argocd-token", help="ArgoCD token (or ARGOCD_TOKEN env var)"
     )
 
-    # status
-    sub.add_parser("status", help="Show status of all images")
+    # pipeline build
+    pipeline_build = pipeline_sub.add_parser(
+        "build", help="Trigger a build via GitHub Actions"
+    )
+    pipeline_build.add_argument("--image", required=True, help="Image name to build")
+    pipeline_build.add_argument(
+        "--tag", default="latest", help="Image tag (default: latest)"
+    )
+    pipeline_build.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
+    pipeline_build.add_argument(
+        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    )
 
-    # scan-report
-    scan_report = sub.add_parser("scan-report", help="Parse scanner output, write diffable vulnerability reports")
-    scan_report.add_argument("--grype", help="Path to Grype JSON results file")
-    scan_report.add_argument("--trivy", help="Path to Trivy JSON results file")
-    scan_report.add_argument("--image", required=True, help="Image name (for report metadata)")
-    scan_report.add_argument("--dir", required=True, help="Output directory for reports (e.g. images/alpine/reports)")
+    # pipeline deploy
+    pipeline_deploy = pipeline_sub.add_parser("deploy", help="Deploy via ArgoCD")
+    pipeline_deploy.add_argument("--image", required=True, help="Image name to deploy")
+    pipeline_deploy.add_argument("--app", required=True, help="ArgoCD application name")
+    pipeline_deploy.add_argument("--argocd-server", help="ArgoCD server URL")
+    pipeline_deploy.add_argument(
+        "--argocd-token", help="ArgoCD token (or ARGOCD_TOKEN env var)"
+    )
 
-    # scan-issues
-    scan_issues = sub.add_parser("scan-issues", help="Create/update/reopen per-CVE GitHub issues")
-    scan_issues.add_argument("--grype", help="Path to Grype JSON results file")
-    scan_issues.add_argument("--trivy", help="Path to Trivy JSON results file")
-    scan_issues.add_argument("--image", required=True, help="Image name")
-    scan_issues.add_argument("--tag", default="", help="Image tag")
-    scan_issues.add_argument("--repo", required=True, help="GitHub repository (e.g. org/repo)")
-    scan_issues.add_argument("--github-token", help="GitHub token (or GITHUB_TOKEN env var)")
+    # pipeline test
+    pipeline_test = pipeline_sub.add_parser(
+        "test", help="Check build test results via GitHub Actions"
+    )
+    pipeline_test.add_argument("--image", required=True, help="Image name to check")
+    pipeline_test.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
+    pipeline_test.add_argument(
+        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    )
 
-    # actions
+    # ---------------------------------------------------------------------------
+    # vuln — vulnerability management
+    # ---------------------------------------------------------------------------
+    vuln = sub.add_parser("vuln", help="Vulnerability management")
+    vuln_sub = vuln.add_subparsers(dest="vuln_command", metavar="subcommand")
+    vuln_sub.required = True
+
+    # vuln report (was scan-report)
+    vuln_report = vuln_sub.add_parser(
+        "report", help="Parse scanner output, write diffable vulnerability reports"
+    )
+    vuln_report.add_argument("--grype", help="Path to Grype JSON results file")
+    vuln_report.add_argument("--trivy", help="Path to Trivy JSON results file")
+    vuln_report.add_argument(
+        "--image", required=True, help="Image name (for report metadata)"
+    )
+    vuln_report.add_argument(
+        "--dir",
+        required=True,
+        help="Output directory for reports (e.g. images/alpine/reports)",
+    )
+
+    # vuln issues (was scan-issues)
+    vuln_issues = vuln_sub.add_parser(
+        "issues", help="Create/update/reopen per-CVE GitHub issues"
+    )
+    vuln_issues.add_argument("--grype", help="Path to Grype JSON results file")
+    vuln_issues.add_argument("--trivy", help="Path to Trivy JSON results file")
+    vuln_issues.add_argument("--image", required=True, help="Image name")
+    vuln_issues.add_argument("--tag", default="", help="Image tag")
+    vuln_issues.add_argument(
+        "--repo", required=True, help="GitHub repository (e.g. org/repo)"
+    )
+    vuln_issues.add_argument(
+        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    )
+
+    # ---------------------------------------------------------------------------
+    # actions — GitHub Actions utilities (unchanged structure)
+    # ---------------------------------------------------------------------------
     actions = sub.add_parser("actions", help="GitHub Actions utilities")
     actions_sub = actions.add_subparsers(dest="actions_command", metavar="subcommand")
     actions_sub.required = True
@@ -1651,17 +1732,10 @@ def main() -> int:
     args = parser.parse_args()
 
     commands = {
-        "validate": cmd_validate,
-        "enrol": cmd_enrol,
-        "check": cmd_check,
-        "build": cmd_build,
-        "deploy": cmd_deploy,
-        "test": cmd_test,
-        "pipeline": cmd_pipeline,
-        "status": cmd_status,
-        "scan-report": cmd_scan_report,
-        "scan-issues": cmd_scan_issues,
-        "actions": cmd_actions,
+        "images":   cmd_images,
+        "pipeline": cmd_pipeline_dispatcher,
+        "vuln":     cmd_vuln,
+        "actions":  cmd_actions,
     }
 
     return commands[args.command](args)

@@ -533,15 +533,17 @@ class TestCmdBuildDeployTest:
 
 
 class TestParser:
-    def test_validate_command(self):
+    def test_images_validate_command(self):
         parser = build_parser()
-        args = parser.parse_args(["validate"])
-        assert args.command == "validate"
+        args = parser.parse_args(["images", "validate"])
+        assert args.command == "images"
+        assert args.images_command == "validate"
 
-    def test_enrol_command(self):
+    def test_images_enrol_command(self):
         parser = build_parser()
         args = parser.parse_args(
             [
+                "images",
                 "enrol",
                 "--name",
                 "myapp",
@@ -551,29 +553,55 @@ class TestParser:
                 "org/myapp",
             ]
         )
-        assert args.command == "enrol"
+        assert args.command == "images"
+        assert args.images_command == "enrol"
         assert args.name == "myapp"
 
-    def test_build_command_defaults(self):
+    def test_pipeline_build_defaults(self):
         parser = build_parser()
-        args = parser.parse_args(["build", "--image", "myapp"])
+        args = parser.parse_args(["pipeline", "build", "--image", "myapp"])
+        assert args.command == "pipeline"
+        assert args.pipeline_command == "build"
         assert args.image == "myapp"
         assert args.tag == "latest"
 
-    def test_status_command(self):
+    def test_images_status_command(self):
         parser = build_parser()
-        args = parser.parse_args(["status"])
-        assert args.command == "status"
+        args = parser.parse_args(["images", "status"])
+        assert args.command == "images"
+        assert args.images_command == "status"
 
-    def test_global_images_yaml_override(self):
+    def test_images_yaml_override(self):
         parser = build_parser()
-        args = parser.parse_args(["--images-yaml", "/tmp/custom.yaml", "validate"])
+        args = parser.parse_args(["images", "--images-yaml", "/tmp/custom.yaml", "validate"])
         assert args.images_yaml == "/tmp/custom.yaml"
 
-    def test_global_state_dir_override(self):
+    def test_state_dir_override(self):
         parser = build_parser()
-        args = parser.parse_args(["--state-dir", "/tmp/state", "check"])
+        args = parser.parse_args(["images", "--state-dir", "/tmp/state", "check"])
         assert args.state_dir == "/tmp/state"
+
+    def test_vuln_report_command(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["vuln", "report", "--image", "myapp", "--dir", "/tmp/reports"]
+        )
+        assert args.command == "vuln"
+        assert args.vuln_command == "report"
+
+    def test_vuln_issues_command(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["vuln", "issues", "--image", "myapp", "--repo", "org/repo"]
+        )
+        assert args.command == "vuln"
+        assert args.vuln_command == "issues"
+
+    def test_pipeline_run_command(self):
+        parser = build_parser()
+        args = parser.parse_args(["pipeline", "run"])
+        assert args.command == "pipeline"
+        assert args.pipeline_command == "run"
 
 
 if __name__ == "__main__":
