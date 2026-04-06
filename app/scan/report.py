@@ -27,11 +27,17 @@ def _analyse_dockerfile(a: DiscoveredArtifact) -> ArtifactAnalysis:
             findings.append(f"{img} is pinned to digest")
         elif ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag (mutable)")
-            recommendations.append(f"Pin {img} to a specific tag or digest")
+            recommendations.append(
+                f"Pin to digest: docker pull {img} && "
+                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
+            )
             risk = "high"
         else:
             findings.append(f"{img} uses a tag (mutable)")
-            recommendations.append(f"Consider pinning {img} to a digest")
+            recommendations.append(
+                f"Pin to digest: docker pull {img} && "
+                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
+            )
             if risk != "high":
                 risk = "medium"
 
@@ -57,10 +63,9 @@ def _analyse_actions(a: DiscoveredArtifact) -> ArtifactAnalysis:
         else:
             if risk != "high":
                 risk = "medium"
-        recommendations.append(
-            f"Pin {r['action']}@{ref_str} to a commit SHA "
-            f"(use cascadeguard actions pin)"
-        )
+
+    if unpinned:
+        recommendations.append("Run: cascadeguard actions pin")
 
     return ArtifactAnalysis(artifact=a, findings=findings,
                             recommendations=recommendations, risk_level=risk)
@@ -81,7 +86,10 @@ def _analyse_compose(a: DiscoveredArtifact) -> ArtifactAnalysis:
         if ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag")
             risk = "medium"
-        recommendations.append(f"Consider pinning {img} to a digest")
+        recommendations.append(
+            f"Pin to digest: docker pull {img} && "
+            f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
+        )
 
     return ArtifactAnalysis(artifact=a, findings=findings,
                             recommendations=recommendations, risk_level=risk)
@@ -102,9 +110,15 @@ def _analyse_k8s(a: DiscoveredArtifact) -> ArtifactAnalysis:
         if ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag")
             risk = "high"
-            recommendations.append(f"Pin {img} to a specific tag or digest")
+            recommendations.append(
+                f"Pin to digest: docker pull {img} && "
+                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
+            )
         else:
-            recommendations.append(f"Consider pinning {img} to a digest")
+            recommendations.append(
+                f"Pin to digest: docker pull {img} && "
+                f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {img}"
+            )
             if risk == "info":
                 risk = "low"
 
