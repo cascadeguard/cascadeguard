@@ -22,6 +22,47 @@ def load_images_yaml(images_yaml_path: Path) -> list:
         return yaml.safe_load(f) or []
 
 
+def load_config(output_dir: Path) -> dict:
+    """Load .cascadeguard.yaml from the repo root, returning {} if absent."""
+    config_path = output_dir / ".cascadeguard.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def resolve_tagging(image: dict, config: dict) -> dict:
+    """
+    Resolve tagging configuration by merging repo-level defaults with
+    per-image overrides.
+
+    Repo-level (.cascadeguard.yaml):
+      tagging:
+        stateRepo: true
+        sourceRepo: false
+        sourceRepoSecret: CROSS_REPO_PAT
+
+    Image-level (images.yaml):
+      tagging:
+        sourceRepo: true   # overrides repo default
+
+    Returns dict with resolved stateRepo, sourceRepo, sourceRepoSecret.
+    """
+    repo_tagging = config.get("tagging", {})
+    image_tagging = image.get("tagging", {})
+
+    def _resolve(key, default):
+        if key in image_tagging:
+            return image_tagging[key]
+        return repo_tagging.get(key, default)
+
+    return {
+        "stateRepo": _resolve("stateRepo", False),
+        "sourceRepo": _resolve("sourceRepo", False),
+        "sourceRepoSecret": _resolve("sourceRepoSecret", "CROSS_REPO_PAT"),
+    }
+
+
 def parse_dockerfile_base_images(dockerfile_path: Path) -> list:
     """Extract all base images from Dockerfile FROM statements (multi-stage support)."""
     if not dockerfile_path.exists():
@@ -426,7 +467,7 @@ def generate_state_for_image(image: dict, output_dir: Path, cache_dir: Path) -> 
     return True
 
 
-def _generate_build_workflow(image: dict, output_dir: Path) -> bool:
+def _generate_build_workflow(image: dict, output_dir: Path, config: dict = None) -> bool:
     """
     Generate a GitHub Actions workflow for building and pushing a Docker image.
 
@@ -439,7 +480,16 @@ def _generate_build_workflow(image: dict, output_dir: Path) -> bool:
         dir: local/image-name          # directory in state repo
         patchFiles: [Dockerfile.patch]  # patches applied before build
         versionFile: VERSION            # version file read as default tag
+
+    Supports a 'tagging' config block (repo-level default in .cascadeguard.yaml,
+    per-image override in images.yaml):
+      tagging:
+        sourceRepo: true               # tag source repo with :version
+        stateRepo: true                # tag state repo with {name}-:version
+        sourceRepoSecret: CROSS_REPO_PAT  # PAT secret name for cross-repo tagging
     """
+    if config is None:
+        config = {}
     name = image.get("name")
     source = image.get("source", {})
     if not source:
@@ -461,6 +511,12 @@ def _generate_build_workflow(image: dict, output_dir: Path) -> bool:
     local_dockerfile = local.get("dockerfile", "")
     patch_files = local.get("patchFiles", [])
     version_file = local.get("versionFile", "")
+
+    # Tagging config (merged from repo-level and image-level)
+    tagging = resolve_tagging(image, config)
+    tag_source_repo = tagging["sourceRepo"]
+    tag_state_repo = tagging["stateRepo"]
+    tag_secret = tagging["sourceRepoSecret"]
 
     workflows_dir = output_dir / ".github" / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
@@ -501,6 +557,37 @@ def _generate_build_workflow(image: dict, output_dir: Path) -> bool:
         type: string"""
 
     # --- Two modes: local dockerfile or upstream source ---
+    def _build_tag_steps(ver_read_path):
+        """Build git tagging steps using the given path to read the version."""
+        steps = ""
+        if ver_read_path and tag_source_repo and repo:
+            steps += f"""
+      - name: Tag source repo
+        if: inputs.suffix == ''
+        env:
+          # Requires a PAT with contents:write on {repo}
+          GH_TOKEN: ${{{{ secrets.{tag_secret} }}}}
+        run: |
+          version=$(cat {ver_read_path})
+          sha=$(git ls-remote https://github.com/{repo}.git {branch} | cut -f1)
+          echo "Tagging {repo} at $sha with $version"
+          gh api repos/{repo}/git/refs \\
+            --method POST \\
+            -f ref="refs/tags/$version" \\
+            -f sha="$sha" || echo "Tag $version may already exist on source repo"
+"""
+        if ver_read_path and tag_state_repo:
+            steps += f"""
+      - name: Tag state repo
+        if: inputs.suffix == ''
+        run: |
+          version=$(cat {ver_read_path})
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "{name}-$version"
+          git push origin "{name}-$version" || echo "Tag {name}-$version may already exist"
+"""
+        return steps
     if local_dockerfile:
         # Local mode: Dockerfile lives in the state repo, no upstream checkout
         if local_dir:
@@ -512,6 +599,7 @@ def _generate_build_workflow(image: dict, output_dir: Path) -> bool:
 
         version_steps = ""
         bump_step = ""
+        tag_steps = ""
         if version_path:
             version_steps = f"""
       - name: Read version
@@ -549,6 +637,7 @@ def _generate_build_workflow(image: dict, output_dir: Path) -> bool:
 """
 
         source_label = repo if repo else repository
+        tag_steps = _build_tag_steps(version_path)
 
         workflow_content = f"""# Auto-generated by CascadeGuard
 # Build and push {name} image
@@ -599,7 +688,7 @@ jobs:
             org.opencontainers.image.description={name} (built by cascadeguard)
           cache-from: type=gha
           cache-to: type=gha,mode=max
-{bump_step}"""
+{tag_steps}{bump_step}"""
 
     else:
         # Upstream mode: checkout upstream source, optionally apply patches
@@ -629,6 +718,7 @@ jobs:
 """
 
         bump_step = ""
+        tag_steps = ""
         if version_path:
             local_steps += f"""
       - name: Read version
@@ -665,6 +755,8 @@ jobs:
           git commit -m "chore: Bump {name} version to $new_version"
           git push
 """
+
+        tag_steps = _build_tag_steps(f"_cascadeguard/{version_path}" if version_path else "")
 
         workflow_content = f"""# Auto-generated by CascadeGuard
 # Build and push {name} image
@@ -718,7 +810,7 @@ jobs:
             org.opencontainers.image.description={name} (built by cascadeguard)
           cache-from: type=gha
           cache-to: type=gha,mode=max
-{bump_step}"""
+{tag_steps}{bump_step}"""
 
     # Check if existing workflow matches
     if workflow_file.exists():
@@ -771,13 +863,16 @@ def main():
     images = load_images_yaml(args.images_yaml)
     print(f"Found {len(images)} images in {args.images_yaml}")
 
+    # Load repo-level config (.cascadeguard.yaml)
+    config = load_config(args.output_dir)
+
     # Generate state for each image
     success_count = 0
     workflow_count = 0
     for image in images:
         if generate_state_for_image(image, args.output_dir, cache_dir):
             success_count += 1
-        if _generate_build_workflow(image, args.output_dir):
+        if _generate_build_workflow(image, args.output_dir, config):
             workflow_count += 1
 
     print(f"\n✓ Generated state files for {success_count}/{len(images)} images")

@@ -21,3 +21,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["app", "actions_policy"]
+packages = ["scan"]
