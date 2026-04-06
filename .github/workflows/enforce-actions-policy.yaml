@@ -37,11 +37,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install CascadeGuard
-        # Install from CAS-105 branch until the actions audit subcommand is
-        # published to PyPI. Switch to `pip install cascadeguard` once released.
+        # Install from main until the actions audit subcommand is published
+        # to PyPI. Switch to `pip install cascadeguard` once released.
         run: |
           pip install --quiet \
-            "git+https://github.com/cascadeguard/cascadeguard.git@CAS-105/actions-policy-schema-and-audit#subdirectory=app"
+            "git+https://github.com/cascadeguard/cascadeguard.git@main#subdirectory=app"
 
       - name: Audit GitHub Actions policy
         run: |

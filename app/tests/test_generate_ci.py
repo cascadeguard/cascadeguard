@@ -81,11 +81,6 @@ class TestBuildImageWorkflow:
 
     def test_has_build_scan_sign_steps(self):
         content = build_image_workflow(SAMPLE_IMAGES)
-        step_names = [
-            s.get("name", "") or s.get("uses", "")
-            for s in content.split("\n")
-            if "- name:" in s or "uses:" in s
-        ]
         assert any("Grype" in n for n in content.split("\n"))
         assert any("Trivy" in n for n in content.split("\n"))
         assert any("Cosign" in n for n in content.split("\n"))

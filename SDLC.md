@@ -52,9 +52,25 @@ An issue is ready to build when:
 - Feedback is addressed in new commits — no force-pushing during review.
 - See [Pull Request Process](#3-pull-request-process) for details.
 
+### In Review — Status Ownership
+
+- Only **ICs** move issues to `in_review` — this signals "I believe this is complete."
+- Only the **Product Owner** moves issues to `done` — after verifying the Definition of Done checklist.
+- ICs MUST NOT move issues directly to `done`.
+
 ### Done
 
-A change is done when it is merged to `main` with all checks passing. The originating GitHub issue is closed with a comment summarizing the resolution and linking to the merged PR.
+A change is done when:
+- It is merged to `main` with all checks passing.
+- The Product Owner has verified the Definition of Done checklist.
+- The originating issue is closed with a comment that includes: PR link(s), preview/deployment links (if applicable), and a summary of what was delivered.
+
+### End-to-End Delivery
+
+When a feature spans backend (API/database) and frontend (UI), the ticket should cover the full stack. A ticket is not done if only one layer is delivered unless the ticket explicitly scopes it to a single layer. For features that naturally span layers:
+- The ticket description should identify all layers involved.
+- PRs may be separate per layer, but ALL must be merged before the ticket moves to done.
+- Preview links should demonstrate the full user-facing flow, not just one component.
 
 ## 2. Issue Management
 

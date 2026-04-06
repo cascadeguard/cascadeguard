@@ -3,15 +3,19 @@
 CascadeGuard — container image lifecycle tool.
 
 Commands:
-  validate        Validate images.yaml configuration
-  enrol           Enrol a new image in images.yaml
-  check           Check image and base image states
-  build           Trigger a build via GitHub Actions
-  deploy          Deploy via ArgoCD
-  test            Check build test results via GitHub Actions
-  pipeline        Run full pipeline (validate -> check -> build -> deploy -> test)
-  status          Show status of all images
-  actions pin     Pin GitHub Actions refs to full commit SHAs
+  images validate       Validate images.yaml configuration
+  images enrol          Enrol a new image in images.yaml
+  images check          Check image and base image states
+  images status         Show status of all images
+  pipeline run          Run full pipeline (validate -> check -> build -> deploy -> test)
+  pipeline build        Trigger a build via GitHub Actions
+  pipeline deploy       Deploy via ArgoCD
+  pipeline test         Check build test results via GitHub Actions
+  vuln report           Parse scanner output, write diffable vulnerability reports
+  vuln issues           Create/update/reopen per-CVE GitHub issues
+  actions pin           Pin GitHub Actions refs to full commit SHAs
+  actions audit         Audit workflow files against an actions-policy.yaml
+  actions policy init   Scaffold a starter actions-policy.yaml
 """
 import argparse
 import json
@@ -950,6 +954,284 @@ def cmd_pipeline(args) -> int:
     return 0
 
 
+def _parse_grype_cves(grype_path: Path) -> List[Dict]:
+    """Parse Grype JSON output into a list of CVE findings."""
+    if not grype_path.exists():
+        return []
+    with open(grype_path) as f:
+        data = json.load(f)
+    findings = []
+    for match in data.get("matches", []):
+        vuln = match.get("vulnerability", {})
+        artifact = match.get("artifact", {})
+        cve_id = vuln.get("id", "UNKNOWN")
+        findings.append({
+            "cve": cve_id,
+            "severity": vuln.get("severity", "Unknown"),
+            "package": artifact.get("name", "unknown"),
+            "version": artifact.get("version", "unknown"),
+            "type": artifact.get("type", "unknown"),
+            "fix_versions": [
+                fv.get("version", "")
+                for fv in vuln.get("fix", {}).get("versions", [])
+            ],
+            "description": vuln.get("description", ""),
+            "url": vuln.get("dataSource", ""),
+            "scanner": "grype",
+        })
+    return findings
+
+
+def _parse_trivy_cves(trivy_path: Path) -> List[Dict]:
+    """Parse Trivy JSON output into a list of CVE findings."""
+    if not trivy_path.exists():
+        return []
+    with open(trivy_path) as f:
+        data = json.load(f)
+    findings = []
+    for result in data.get("Results", []):
+        for vuln in result.get("Vulnerabilities", []):
+            findings.append({
+                "cve": vuln.get("VulnerabilityID", "UNKNOWN"),
+                "severity": vuln.get("Severity", "Unknown").capitalize(),
+                "package": vuln.get("PkgName", "unknown"),
+                "version": vuln.get("InstalledVersion", "unknown"),
+                "type": result.get("Type", "unknown"),
+                "fix_versions": [vuln["FixedVersion"]] if vuln.get("FixedVersion") else [],
+                "description": vuln.get("Description", ""),
+                "url": vuln.get("PrimaryURL", ""),
+                "scanner": "trivy",
+            })
+    return findings
+
+
+def _deduplicate_findings(findings: List[Dict]) -> List[Dict]:
+    """Deduplicate by CVE+package, preferring grype, keeping highest severity."""
+    severity_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Negligible": 0, "Unknown": -1}
+    seen: Dict[str, Dict] = {}
+    for f in findings:
+        key = f"{f['cve']}:{f['package']}"
+        if key not in seen or severity_rank.get(f["severity"], -1) > severity_rank.get(seen[key]["severity"], -1):
+            seen[key] = f
+    return sorted(seen.values(), key=lambda x: (-severity_rank.get(x["severity"], -1), x["cve"]))
+
+
+def cmd_scan_report(args) -> int:
+    """Parse scanner output and write a diffable vulnerability report."""
+    grype_path = Path(args.grype) if args.grype else None
+    trivy_path = Path(args.trivy) if args.trivy else None
+
+    if not grype_path and not trivy_path:
+        print("Error: at least one of --grype or --trivy is required", file=sys.stderr)
+        return 1
+
+    findings = []
+    if grype_path:
+        findings.extend(_parse_grype_cves(grype_path))
+    if trivy_path:
+        findings.extend(_parse_trivy_cves(trivy_path))
+
+    deduped = _deduplicate_findings(findings)
+
+    # Write reports to the output directory
+    report_dir = Path(args.dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write JSON report (machine-readable, diffable)
+    json_report = {
+        "image": args.image,
+        "scan_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "summary": {
+            "critical": sum(1 for f in deduped if f["severity"] == "Critical"),
+            "high": sum(1 for f in deduped if f["severity"] == "High"),
+            "medium": sum(1 for f in deduped if f["severity"] == "Medium"),
+            "low": sum(1 for f in deduped if f["severity"] == "Low"),
+            "total": len(deduped),
+        },
+        "findings": [
+            {
+                "cve": f["cve"],
+                "severity": f["severity"],
+                "package": f["package"],
+                "version": f["version"],
+                "fix_versions": f["fix_versions"],
+            }
+            for f in deduped
+        ],
+    }
+
+    json_path = report_dir / "vulnerability-report.json"
+    with open(json_path, "w") as f:
+        json.dump(json_report, f, indent=2, sort_keys=False)
+        f.write("\n")
+
+    # Write markdown report (human-readable, diffable)
+    md_path = report_dir / "vulnerability-report.md"
+    with open(md_path, "w") as f:
+        summary = json_report["summary"]
+        f.write(f"# Vulnerability Report: {args.image}\n\n")
+        f.write(f"| Severity | Count |\n")
+        f.write(f"|----------|-------|\n")
+        f.write(f"| Critical | {summary['critical']} |\n")
+        f.write(f"| High     | {summary['high']} |\n")
+        f.write(f"| Medium   | {summary['medium']} |\n")
+        f.write(f"| Low      | {summary['low']} |\n")
+        f.write(f"| **Total**| **{summary['total']}** |\n\n")
+
+        if deduped:
+            f.write("## Findings\n\n")
+            f.write("| CVE | Severity | Package | Version | Fix Available |\n")
+            f.write("|-----|----------|---------|---------|---------------|\n")
+            for finding in deduped:
+                fix = ", ".join(finding["fix_versions"]) if finding["fix_versions"] else "No"
+                f.write(f"| {finding['cve']} | {finding['severity']} | {finding['package']} | {finding['version']} | {fix} |\n")
+        else:
+            f.write("No vulnerabilities found.\n")
+
+    print(f"Reports written to {report_dir}/")
+    print(f"  {json_path}")
+    print(f"  {md_path}")
+    print(f"  Total findings: {len(deduped)} ({json_report['summary']['critical']} critical, {json_report['summary']['high']} high)")
+    return 0
+
+
+def cmd_scan_issues(args) -> int:
+    """Create/update/reopen per-CVE GitHub issues from scanner output."""
+    grype_path = Path(args.grype) if args.grype else None
+    trivy_path = Path(args.trivy) if args.trivy else None
+
+    if not grype_path and not trivy_path:
+        print("Error: at least one of --grype or --trivy is required", file=sys.stderr)
+        return 1
+
+    token = args.github_token or os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        print("Error: GitHub token required (--github-token or GITHUB_TOKEN env var)", file=sys.stderr)
+        return 1
+
+    if not args.repo:
+        print("Error: GitHub repository required (--repo)", file=sys.stderr)
+        return 1
+
+    findings = []
+    if grype_path:
+        findings.extend(_parse_grype_cves(grype_path))
+    if trivy_path:
+        findings.extend(_parse_trivy_cves(trivy_path))
+
+    deduped = _deduplicate_findings(findings)
+
+    # Filter to critical and high only for issue creation
+    actionable = [f for f in deduped if f["severity"] in ("Critical", "High")]
+
+    if not actionable:
+        print("No critical or high vulnerabilities found. No issues to create.")
+        return 0
+
+    gh = GitHubActionsProvider(token=token, repo=args.repo)
+
+    # Fetch all open CVE issues in the repo
+    existing_issues = _fetch_cve_issues(gh, args.repo)
+
+    created = 0
+    updated = 0
+    reopened = 0
+
+    for finding in actionable:
+        cve = finding["cve"]
+        pkg = finding["package"]
+        severity = finding["severity"]
+        issue_title = f"{cve}: {pkg} ({severity.lower()})"
+
+        # Check for existing issue by CVE+package
+        existing = _find_existing_issue(existing_issues, cve, pkg)
+
+        fix_str = ", ".join(finding["fix_versions"]) if finding["fix_versions"] else "No fix available"
+        image_label = f"image:{args.image}"
+        severity_label = f"severity:{severity.lower()}"
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        body = (
+            f"## {cve}: {pkg}\n\n"
+            f"- **Severity:** {severity}\n"
+            f"- **Package:** {pkg} {finding['version']}\n"
+            f"- **Fix:** {fix_str}\n"
+            f"- **Affected image:** {args.image}"
+            + (f":{args.tag}" if args.tag else "")
+            + f"\n- **First detected:** {today}\n"
+        )
+        if finding.get("url"):
+            body += f"- **Reference:** {finding['url']}\n"
+
+        if existing and existing["state"] == "open":
+            # Add a comment noting re-detection with image info
+            comment_body = f"Re-detected on **{today}** in `{args.image}" + (f":{args.tag}" if args.tag else "") + f"`.\nPackage version: {finding['version']}. Fix: {fix_str}."
+            _gh_request(gh, "POST", f"/repos/{args.repo}/issues/{existing['number']}/comments", {"body": comment_body})
+            # Ensure image label exists
+            _ensure_label(gh, args.repo, existing["number"], image_label)
+            updated += 1
+        elif existing and existing["state"] == "closed":
+            # Reopen the issue
+            _gh_request(gh, "PATCH", f"/repos/{args.repo}/issues/{existing['number']}", {"state": "open"})
+            comment_body = f"Reopened on **{today}**: re-detected in `{args.image}" + (f":{args.tag}" if args.tag else "") + f"`.\nPackage version: {finding['version']}. Fix: {fix_str}."
+            _gh_request(gh, "POST", f"/repos/{args.repo}/issues/{existing['number']}/comments", {"body": comment_body})
+            _ensure_label(gh, args.repo, existing["number"], image_label)
+            reopened += 1
+        else:
+            # Create new issue
+            labels = ["cve", "automated", severity_label, image_label]
+            new_issue = _gh_request(gh, "POST", f"/repos/{args.repo}/issues", {
+                "title": issue_title,
+                "body": body,
+                "labels": labels,
+            })
+            if new_issue:
+                print(f"  Created issue #{new_issue.get('number')}: {issue_title}")
+            created += 1
+
+    print(f"\nScan issues summary: {created} created, {updated} updated, {reopened} reopened")
+    return 0
+
+
+def _gh_request(provider: GitHubActionsProvider, method: str, path: str, data: Optional[dict] = None) -> Optional[dict]:
+    """Make a GitHub API request using the provider's auth."""
+    try:
+        return provider._request(method, path, data)
+    except RuntimeError as exc:
+        print(f"  Warning: GitHub API error: {exc}", file=sys.stderr)
+        return None
+
+
+def _fetch_cve_issues(provider: GitHubActionsProvider, repo: str) -> List[Dict]:
+    """Fetch all open and closed CVE-labelled issues."""
+    issues = []
+    for state in ("open", "closed"):
+        page = 1
+        while True:
+            result = _gh_request(provider, "GET", f"/repos/{repo}/issues?labels=cve,automated&state={state}&per_page=100&page={page}")
+            if not result:
+                break
+            issues.extend(result)
+            if len(result) < 100:
+                break
+            page += 1
+    return issues
+
+
+def _find_existing_issue(issues: List[Dict], cve: str, package: str) -> Optional[Dict]:
+    """Find an existing issue matching CVE and package."""
+    for issue in issues:
+        title = issue.get("title", "")
+        if cve in title and package in title:
+            return issue
+    return None
+
+
+def _ensure_label(provider: GitHubActionsProvider, repo: str, issue_number: int, label: str):
+    """Add a label to an issue if it doesn't already have it."""
+    _gh_request(provider, "POST", f"/repos/{repo}/issues/{issue_number}/labels", {"labels": [label]})
+
+
 def cmd_actions_pin(args) -> int:
     """Pin mutable GitHub Actions refs to full commit SHAs."""
     token = getattr(args, 'github_token', None) or os.environ.get("GITHUB_TOKEN", "")
@@ -973,9 +1255,172 @@ def cmd_actions_pin(args) -> int:
     return 0
 
 
+def cmd_actions_audit(args) -> int:
+    """Audit workflow files for pinning status and optionally against a policy."""
+    import json as _json
+    from actions_policy import (
+        load_policy,
+        PolicyAuditor,
+        PolicyError,
+        scan_pinning_status,
+    )
+
+    workflows_dir = Path(args.workflows_dir)
+    fmt = getattr(args, "format", "text")
+    policy_path_str: Optional[str] = getattr(args, "policy", None)
+
+    if not workflows_dir.exists():
+        print(f"Error: workflows directory not found: {workflows_dir}", file=sys.stderr)
+        return 1
+
+    # ── Mode A: pinning-only audit (no policy supplied) ────────────────────
+    if not policy_path_str:
+        refs = scan_pinning_status(workflows_dir)
+        mutable = [r for r in refs if r.mutable]
+
+        if fmt == "json":
+            data: dict = {
+                "passed": len(mutable) == 0,
+                "summary": {
+                    "pinned": sum(1 for r in refs if r.status == "pinned"),
+                    "tag":    sum(1 for r in refs if r.status == "tag"),
+                    "branch": sum(1 for r in refs if r.status == "branch"),
+                    "local":  sum(1 for r in refs if r.status == "local"),
+                },
+                "refs": [r.as_dict() for r in refs],
+            }
+            print(_json.dumps(data, indent=2))
+        else:
+            _STATUS_LABEL = {
+                "pinned": "✓ pinned",
+                "tag":    "✗ tag   ",
+                "branch": "✗ branch",
+                "local":  "  local ",
+            }
+            for r in refs:
+                label = _STATUS_LABEL.get(r.status, r.status)
+                print(f"  {label}  {r.action}@{r.ref}  ({r.workflow_file}:{r.line_number})")
+            if mutable:
+                print(f"\nAudit FAILED — {len(mutable)} mutable reference(s) found.")
+            else:
+                n_pinned = sum(1 for r in refs if r.status == "pinned")
+                n_local  = sum(1 for r in refs if r.status == "local")
+                print(f"\nAudit PASSED — {n_pinned} pinned, {n_local} local.")
+
+        return 1 if mutable else 0
+
+    # ── Mode B: policy audit ────────────────────────────────────────────────
+    policy_path = Path(policy_path_str)
+    try:
+        policy = load_policy(policy_path)
+    except PolicyError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    auditor = PolicyAuditor(policy)
+    result = auditor.audit(workflows_dir)
+
+    if fmt == "json":
+        data = {
+            "passed": result.passed,
+            "summary": {
+                "violations": len(result.violations),
+                "allowed":    result.allowed,
+                "skipped":    result.skipped,
+            },
+            "violations": [
+                {
+                    "workflow_file": v.workflow_file,
+                    "line_number":   v.line_number,
+                    "action":        v.action,
+                    "ref":           v.ref,
+                    "reason":        v.reason,
+                }
+                for v in result.violations
+            ],
+        }
+        print(_json.dumps(data, indent=2))
+    else:
+        if result.violations:
+            print(f"Policy audit FAILED — {len(result.violations)} violation(s):\n")
+            for v in result.violations:
+                print(f"  {v}")
+            print(
+                f"\n{result.allowed} action(s) passed, "
+                f"{result.skipped} skipped (local/composite)."
+            )
+        else:
+            print(
+                f"Policy audit PASSED — {result.allowed} action(s) checked, "
+                f"{result.skipped} skipped."
+            )
+
+    return 0 if result.passed else 1
+
+
+def cmd_actions_policy_init(args) -> int:
+    """Scaffold a starter .cascadeguard/actions-policy.yaml."""
+    from actions_policy import init_policy
+
+    output_path = Path(args.output)
+    written = init_policy(output_path, force=args.force)
+    if written:
+        print(f"Created {output_path}")
+        print("Edit the file to customise allowed_owners, allowed_actions, and exceptions.")
+    else:
+        print(
+            f"{output_path} already exists. Use --force to overwrite.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def cmd_actions_policy(args) -> int:
+    """Dispatch 'actions policy' subcommands."""
+    return {"init": cmd_actions_policy_init}[args.policy_command](args)
+
+
 def cmd_actions(args) -> int:
     """Dispatch 'actions' subcommands."""
-    return {"pin": cmd_actions_pin}[args.actions_command](args)
+    return {
+        "pin":    cmd_actions_pin,
+        "audit":  cmd_actions_audit,
+        "policy": cmd_actions_policy,
+    }[args.actions_command](args)
+
+
+def cmd_images(args) -> int:
+    """Dispatch 'images' subcommands."""
+    return {
+        "validate": cmd_validate,
+        "enrol":    cmd_enrol,
+        "check":    cmd_check,
+        "status":   cmd_status,
+    }[args.images_command](args)
+
+
+def cmd_pipeline_run(args) -> int:
+    """Alias for the full pipeline runner (was cmd_pipeline)."""
+    return cmd_pipeline(args)
+
+
+def cmd_pipeline_dispatcher(args) -> int:
+    """Dispatch 'pipeline' subcommands."""
+    return {
+        "run":    cmd_pipeline_run,
+        "build":  cmd_build,
+        "deploy": cmd_deploy,
+        "test":   cmd_test,
+    }[args.pipeline_command](args)
+
+
+def cmd_vuln(args) -> int:
+    """Dispatch 'vuln' subcommands."""
+    return {
+        "report": cmd_scan_report,
+        "issues": cmd_scan_issues,
+    }[args.vuln_command](args)
 
 
 def cmd_status(args) -> int:
@@ -1045,96 +1490,160 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  validate    Validate images.yaml configuration
-  enrol       Enrol a new image in images.yaml
-  check       Check image and base image states
-  build       Trigger a build via GitHub Actions
-  deploy      Deploy via ArgoCD
-  test        Check build test results via GitHub Actions
-  pipeline    Run full pipeline (validate -> check -> build -> deploy -> test)
-  status      Show status of all images
+  images      Image lifecycle management
+  pipeline    CI/CD orchestration
+  vuln        Vulnerability management
+  actions     GitHub Actions utilities
 """,
-    )
-
-    parser.add_argument(
-        "--images-yaml",
-        default="images.yaml",
-        help="Path to images.yaml (default: images.yaml)",
-    )
-    parser.add_argument(
-        "--state-dir",
-        default="state",
-        help="Path to state directory (default: state)",
     )
 
     sub = parser.add_subparsers(dest="command", metavar="command")
     sub.required = True
 
-    # validate
-    sub.add_parser("validate", help="Validate images.yaml configuration")
+    # ---------------------------------------------------------------------------
+    # images — image lifecycle management
+    # ---------------------------------------------------------------------------
+    images = sub.add_parser("images", help="Image lifecycle management")
+    images.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
+    )
+    images.add_argument(
+        "--state-dir",
+        default="state",
+        help="Path to state directory (default: state)",
+    )
+    images_sub = images.add_subparsers(dest="images_command", metavar="subcommand")
+    images_sub.required = True
 
-    # enrol
-    enrol = sub.add_parser("enrol", help="Enrol a new image")
-    enrol.add_argument("--name", required=True, help="Image name")
-    enrol.add_argument("--registry", required=True, help="Registry (e.g. ghcr.io)")
-    enrol.add_argument(
+    # images validate
+    images_sub.add_parser("validate", help="Validate images.yaml configuration")
+
+    # images enrol
+    images_enrol = images_sub.add_parser("enrol", help="Enrol a new image")
+    images_enrol.add_argument("--name", required=True, help="Image name")
+    images_enrol.add_argument("--registry", required=True, help="Registry (e.g. ghcr.io)")
+    images_enrol.add_argument(
         "--repository", required=True, help="Repository (e.g. org/image)"
     )
-    enrol.add_argument("--provider", help="Source provider (github/gitlab)")
-    enrol.add_argument("--repo", help="Source repository (e.g. org/repo)")
-    enrol.add_argument("--dockerfile", help="Path to Dockerfile in source repo")
-    enrol.add_argument("--branch", help="Source branch (default: main)")
-    enrol.add_argument("--rebuild-delay", help="Rebuild delay (e.g. 7d)")
+    images_enrol.add_argument("--provider", help="Source provider (github/gitlab)")
+    images_enrol.add_argument("--repo", help="Source repository (e.g. org/repo)")
+    images_enrol.add_argument("--dockerfile", help="Path to Dockerfile in source repo")
+    images_enrol.add_argument("--branch", help="Source branch (default: main)")
+    images_enrol.add_argument("--rebuild-delay", help="Rebuild delay (e.g. 7d)")
 
-    # check
-    sub.add_parser("check", help="Check image and base image states")
+    # images check
+    images_sub.add_parser("check", help="Check image and base image states")
 
-    # build
-    build = sub.add_parser("build", help="Trigger a build via GitHub Actions")
-    build.add_argument("--image", required=True, help="Image name to build")
-    build.add_argument("--tag", default="latest", help="Image tag (default: latest)")
-    build.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
-    build.add_argument(
-        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    # images status
+    images_sub.add_parser("status", help="Show status of all images")
+
+    # ---------------------------------------------------------------------------
+    # pipeline — CI/CD orchestration
+    # ---------------------------------------------------------------------------
+    pipeline = sub.add_parser("pipeline", help="CI/CD orchestration")
+    pipeline_sub = pipeline.add_subparsers(dest="pipeline_command", metavar="subcommand")
+    pipeline_sub.required = True
+
+    # pipeline run (full pipeline)
+    pipeline_run = pipeline_sub.add_parser("run", help="Run full pipeline")
+    pipeline_run.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
     )
-
-    # deploy
-    deploy = sub.add_parser("deploy", help="Deploy via ArgoCD")
-    deploy.add_argument("--image", required=True, help="Image name to deploy")
-    deploy.add_argument("--app", required=True, help="ArgoCD application name")
-    deploy.add_argument("--argocd-server", help="ArgoCD server URL")
-    deploy.add_argument(
-        "--argocd-token", help="ArgoCD token (or ARGOCD_TOKEN env var)"
+    pipeline_run.add_argument(
+        "--state-dir",
+        default="state",
+        help="Path to state directory (default: state)",
     )
-
-    # test
-    test = sub.add_parser("test", help="Check build test results")
-    test.add_argument("--image", required=True, help="Image name to check")
-    test.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
-    test.add_argument(
-        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
-    )
-
-    # pipeline
-    pipeline = sub.add_parser("pipeline", help="Run full pipeline")
-    pipeline.add_argument("--image", help="Image name (optional)")
-    pipeline.add_argument(
+    pipeline_run.add_argument("--image", help="Image name (optional)")
+    pipeline_run.add_argument(
         "--tag", default="latest", help="Image tag (default: latest)"
     )
-    pipeline.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
-    pipeline.add_argument(
+    pipeline_run.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
+    pipeline_run.add_argument(
         "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
     )
-    pipeline.add_argument("--app", help="ArgoCD application name")
-    pipeline.add_argument("--argocd-server", help="ArgoCD server URL")
-    pipeline.add_argument(
+    pipeline_run.add_argument("--app", help="ArgoCD application name")
+    pipeline_run.add_argument("--argocd-server", help="ArgoCD server URL")
+    pipeline_run.add_argument(
         "--argocd-token", help="ArgoCD token (or ARGOCD_TOKEN env var)"
     )
 
-    # status
-    sub.add_parser("status", help="Show status of all images")
+    # pipeline build
+    pipeline_build = pipeline_sub.add_parser(
+        "build", help="Trigger a build via GitHub Actions"
+    )
+    pipeline_build.add_argument("--image", required=True, help="Image name to build")
+    pipeline_build.add_argument(
+        "--tag", default="latest", help="Image tag (default: latest)"
+    )
+    pipeline_build.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
+    pipeline_build.add_argument(
+        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    )
 
-    # actions
+    # pipeline deploy
+    pipeline_deploy = pipeline_sub.add_parser("deploy", help="Deploy via ArgoCD")
+    pipeline_deploy.add_argument("--image", required=True, help="Image name to deploy")
+    pipeline_deploy.add_argument("--app", required=True, help="ArgoCD application name")
+    pipeline_deploy.add_argument("--argocd-server", help="ArgoCD server URL")
+    pipeline_deploy.add_argument(
+        "--argocd-token", help="ArgoCD token (or ARGOCD_TOKEN env var)"
+    )
+
+    # pipeline test
+    pipeline_test = pipeline_sub.add_parser(
+        "test", help="Check build test results via GitHub Actions"
+    )
+    pipeline_test.add_argument("--image", required=True, help="Image name to check")
+    pipeline_test.add_argument("--repo", help="GitHub repository (e.g. org/repo)")
+    pipeline_test.add_argument(
+        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    )
+
+    # ---------------------------------------------------------------------------
+    # vuln — vulnerability management
+    # ---------------------------------------------------------------------------
+    vuln = sub.add_parser("vuln", help="Vulnerability management")
+    vuln_sub = vuln.add_subparsers(dest="vuln_command", metavar="subcommand")
+    vuln_sub.required = True
+
+    # vuln report (was scan-report)
+    vuln_report = vuln_sub.add_parser(
+        "report", help="Parse scanner output, write diffable vulnerability reports"
+    )
+    vuln_report.add_argument("--grype", help="Path to Grype JSON results file")
+    vuln_report.add_argument("--trivy", help="Path to Trivy JSON results file")
+    vuln_report.add_argument(
+        "--image", required=True, help="Image name (for report metadata)"
+    )
+    vuln_report.add_argument(
+        "--dir",
+        required=True,
+        help="Output directory for reports (e.g. images/alpine/reports)",
+    )
+
+    # vuln issues (was scan-issues)
+    vuln_issues = vuln_sub.add_parser(
+        "issues", help="Create/update/reopen per-CVE GitHub issues"
+    )
+    vuln_issues.add_argument("--grype", help="Path to Grype JSON results file")
+    vuln_issues.add_argument("--trivy", help="Path to Trivy JSON results file")
+    vuln_issues.add_argument("--image", required=True, help="Image name")
+    vuln_issues.add_argument("--tag", default="", help="Image tag")
+    vuln_issues.add_argument(
+        "--repo", required=True, help="GitHub repository (e.g. org/repo)"
+    )
+    vuln_issues.add_argument(
+        "--github-token", help="GitHub token (or GITHUB_TOKEN env var)"
+    )
+
+    # ---------------------------------------------------------------------------
+    # actions — GitHub Actions utilities (unchanged structure)
+    # ---------------------------------------------------------------------------
     actions = sub.add_parser("actions", help="GitHub Actions utilities")
     actions_sub = actions.add_subparsers(dest="actions_command", metavar="subcommand")
     actions_sub.required = True
@@ -1163,6 +1672,58 @@ Commands:
         help="GitHub token (or GITHUB_TOKEN env var)",
     )
 
+    # actions audit
+    actions_audit = actions_sub.add_parser(
+        "audit",
+        help="Audit workflow files for pinning status (and optionally against a policy)",
+    )
+    actions_audit.add_argument(
+        "--policy",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to an actions-policy.yaml file. "
+            "When supplied, validates each action against the policy allow-list. "
+            "When omitted, reports the pinning status of every action "
+            "(exit 1 if any mutable refs found)."
+        ),
+    )
+    actions_audit.add_argument(
+        "--workflows-dir",
+        default=".github/workflows",
+        help="Path to workflows directory (default: .github/workflows)",
+    )
+    actions_audit.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        metavar="FORMAT",
+        help="Output format: text (default) or json",
+    )
+
+    # actions policy
+    actions_policy = actions_sub.add_parser(
+        "policy",
+        help="Manage actions-policy.yaml",
+    )
+    policy_sub = actions_policy.add_subparsers(dest="policy_command", metavar="subcommand")
+    policy_sub.required = True
+
+    policy_init = policy_sub.add_parser(
+        "init",
+        help="Scaffold a starter .cascadeguard/actions-policy.yaml",
+    )
+    policy_init.add_argument(
+        "--output",
+        default=".cascadeguard/actions-policy.yaml",
+        help="Output path (default: .cascadeguard/actions-policy.yaml)",
+    )
+    policy_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing policy file",
+    )
+
     return parser
 
 
@@ -1171,15 +1732,10 @@ def main() -> int:
     args = parser.parse_args()
 
     commands = {
-        "validate": cmd_validate,
-        "enrol": cmd_enrol,
-        "check": cmd_check,
-        "build": cmd_build,
-        "deploy": cmd_deploy,
-        "test": cmd_test,
-        "pipeline": cmd_pipeline,
-        "status": cmd_status,
-        "actions": cmd_actions,
+        "images":   cmd_images,
+        "pipeline": cmd_pipeline_dispatcher,
+        "vuln":     cmd_vuln,
+        "actions":  cmd_actions,
     }
 
     return commands[args.command](args)

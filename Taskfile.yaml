@@ -79,11 +79,26 @@ tasks:
           fi
         silent: true
 
+  hooks:install:
+    desc: "Install git hooks"
+    cmds:
+      - cmd: |
+          if [ -n "$CI" ]; then
+            echo "CI environment detected, skipping git hook installation"
+          else
+            echo "Installing pre-commit hook..."
+            cp hooks/pre-commit .git/hooks/pre-commit
+            chmod +x .git/hooks/pre-commit
+            echo "✅ Pre-commit hook installed"
+          fi
+        silent: true
+
   setup:
     desc: "Set up CascadeGuard development environment"
     cmds:
       - task: app:setup
       - task: cdk8s:setup
+      - task: hooks:install
 
   # Test setup and execution (code-only, no state required)
   test:unit:setup:
@@ -181,9 +196,9 @@ tasks:
         silent: true
       - cmd: |
           if [ -n "$CI" ]; then
-            python -m pytest tests/test_app.py tests/test_cascadeguard.py -v
+            python -m pytest tests/test_app.py tests/test_cascadeguard.py tests/test_scan.py tests/test_generate_ci.py tests/test_scan_issues_api.py tests/test_actions_policy.py -v
           else
-            .venv/bin/python -m pytest tests/test_app.py tests/test_cascadeguard.py -v
+            .venv/bin/python -m pytest tests/test_app.py tests/test_cascadeguard.py tests/test_scan.py tests/test_generate_ci.py tests/test_scan_issues_api.py tests/test_actions_policy.py -v
           fi
 
   cdk8s:test:unit:
