@@ -293,14 +293,21 @@ def format_text(result: ScanResult) -> str:
         actionable = [a for a in group if a.risk_level != "info"]
         info_only = [a for a in group if a.risk_level == "info"]
 
-        for a in actionable:
+        # Show up to MAX_DETAIL items with full detail, then summarise the rest
+        MAX_DETAIL = 5
+        for a in actionable[:MAX_DETAIL]:
             icon = _RISK_ICONS.get(a.risk_level, " ")
             lines.append(f"  {icon} {a.artifact.path}")
-            lines.append(f"    {a.artifact.summary}")
             for f in a.findings:
                 lines.append(f"    · {f}")
             for r in a.recommendations:
                 lines.append(f"    → {r}")
+
+        remaining = actionable[MAX_DETAIL:]
+        if remaining:
+            lines.append(f"  ⚠ ... and {len(remaining)} more with findings:")
+            for a in remaining:
+                lines.append(f"    {a.artifact.path}")
 
         if info_only:
             lines.append(f"  ℹ {len(info_only)} with no findings")
