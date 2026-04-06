@@ -65,7 +65,18 @@ def run_scan(
     if output_format == "json":
         output = format_json(result)
         if output_file:
-            Path(output_file).write_text(output)
+            output_path = Path(output_file)
+            # Prevent path traversal outside CWD (e.g. ../../etc/passwd)
+            try:
+                output_path.resolve().relative_to(Path.cwd())
+            except ValueError:
+                print(
+                    f"Error: --output path must be within the current directory",
+                    file=sys.stderr,
+                )
+                return 1
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(output)
             print(f"Report written to {output_file}")
         else:
             print(output)
