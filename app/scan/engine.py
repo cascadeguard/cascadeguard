@@ -80,33 +80,34 @@ def run_scan(
 
 
 def _interactive_select(artifacts: list[DiscoveredArtifact]) -> list[DiscoveredArtifact]:
-    """Simple interactive selection (fallback mode — no curses)."""
+    """Interactive selection — show summary, let user exclude by kind."""
     # If stdin is not a TTY, select all
     if not sys.stdin.isatty():
         return list(artifacts)
 
-    # Group by kind
+    # Group by kind, preserving display order
+    _KIND_ORDER = ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s")
     by_kind: dict[str, list[DiscoveredArtifact]] = {}
     for a in artifacts:
         by_kind.setdefault(a.kind, []).append(a)
 
-    print(f"\nCascadeGuard — Found {len(artifacts)} artifacts:\n")
-
-    indexed: list[tuple[int, DiscoveredArtifact]] = []
+    # Build numbered kind list
+    kinds_present: list[tuple[int, str, list[DiscoveredArtifact]]] = []
     idx = 1
-    for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
+    for kind in _KIND_ORDER:
         group = by_kind.get(kind, [])
         if not group:
             continue
-        label = _KIND_LABELS.get(kind, kind)
-        print(f"  {label} ({len(group)})")
-        for a in group:
-            print(f"    [{idx}] {a.path}  — {a.summary}")
-            indexed.append((idx, a))
-            idx += 1
-        print()
+        kinds_present.append((idx, kind, group))
+        idx += 1
 
-    print("Enter numbers to exclude (comma-separated), or press Enter to scan all:")
+    print(f"\nCascadeGuard — Found {len(artifacts)} artifacts:\n")
+    for num, kind, group in kinds_present:
+        label = _KIND_LABELS.get(kind, kind)
+        print(f"  [{num}] {label} ({len(group)})")
+    print()
+
+    print("Exclude groups by number (e.g. 4,5), or press Enter to scan all:")
     try:
         raw = input("> ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -114,12 +115,19 @@ def _interactive_select(artifacts: list[DiscoveredArtifact]) -> list[DiscoveredA
         return []
 
     if not raw:
-        return [a for _, a in indexed]
+        return list(artifacts)
 
     try:
-        exclude = {int(x.strip()) for x in raw.split(",") if x.strip()}
+        exclude_nums = {int(x.strip()) for x in raw.split(",") if x.strip()}
     except ValueError:
         print("Invalid input, scanning all artifacts.")
-        return [a for _, a in indexed]
+        return list(artifacts)
 
-    return [a for i, a in indexed if i not in exclude]
+    excluded_kinds = {kind for num, kind, _ in kinds_present if num in exclude_nums}
+    selected = [a for a in artifacts if a.kind not in excluded_kinds]
+
+    if excluded_kinds:
+        labels = [_KIND_LABELS.get(k, k) for k in excluded_kinds]
+        print(f"Excluded: {', '.join(labels)}")
+
+    return selected
