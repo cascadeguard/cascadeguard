@@ -22,18 +22,20 @@ def _analyse_dockerfile(a: DiscoveredArtifact) -> ArtifactAnalysis:
     if stages:
         findings.append(f"Multi-stage build with {len(stages)} stages")
 
+    unpinned = [img for img in bases if "@sha256:" not in img]
     for img in bases:
         if "@sha256:" in img:
             findings.append(f"{img} is pinned to digest")
         elif ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag (mutable)")
-            recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
             risk = "high"
         else:
             findings.append(f"{img} uses a tag (mutable)")
-            recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
             if risk != "high":
                 risk = "medium"
+
+    if unpinned:
+        recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
 
     return ArtifactAnalysis(artifact=a, findings=findings,
                             recommendations=recommendations, risk_level=risk)
@@ -80,7 +82,76 @@ def _analyse_compose(a: DiscoveredArtifact) -> ArtifactAnalysis:
         if ":latest" in img or ":" not in img:
             findings.append(f"{img} uses 'latest' tag")
             risk = "medium"
+    if imgs:
         recommendations.append(f"Run: cascadeguard images pin --file {a.path}")
+
+    return ArtifactAnalysis(artifact=a, findings=findings,
+                            recommendations=recommendations, risk_level=risk)
+
+
+def _analyse_helm(a: DiscoveredArtifact) -> ArtifactAnalysis:
+    findings: list[str] = []
+    recommendations: list[str] = []
+    risk = "info"
+
+    chart_name = a.details.get("chart_name", "")
+    values_imgs = a.details.get("values_images", [])
+    template_imgs = a.details.get("template_images", [])
+
+    findings.append(f"Chart: {chart_name}")
+
+    if values_imgs:
+        findings.append(f"{len(values_imgs)} image(s) configured in values.yaml")
+    if template_imgs:
+        findings.append(f"{len(template_imgs)} hardcoded image(s) in templates")
+        risk = "medium"
+
+    for img in values_imgs + template_imgs:
+        if "@sha256:" in img:
+            continue
+        if ":latest" in img or ":" not in img:
+            findings.append(f"{img} uses 'latest' tag")
+            if risk != "high":
+                risk = "medium"
+
+    if values_imgs:
+        recommendations.append(f"Pin image tags in {a.path}/values.yaml")
+    if template_imgs:
+        recommendations.append(
+            f"Move hardcoded images to values.yaml and override at deploy time"
+        )
+
+    return ArtifactAnalysis(artifact=a, findings=findings,
+                            recommendations=recommendations, risk_level=risk)
+
+
+def _analyse_kustomize(a: DiscoveredArtifact) -> ArtifactAnalysis:
+    findings: list[str] = []
+    recommendations: list[str] = []
+    risk = "info"
+
+    transformer = a.details.get("images_transformer", [])
+    resource_imgs = a.details.get("resource_images", [])
+
+    if transformer:
+        findings.append(f"{len(transformer)} image override(s) in kustomization.yaml")
+    if resource_imgs:
+        findings.append(f"{len(resource_imgs)} image(s) in resources")
+
+    unpinned_resources = [i for i in resource_imgs if "@sha256:" not in i]
+    if unpinned_resources and not transformer:
+        findings.append("No images transformer configured — images are not overridden")
+        risk = "medium"
+        recommendations.append(
+            f"Add an images transformer to {a.path} to pin digests"
+        )
+    elif unpinned_resources:
+        recommendations.append(
+            f"Pin digests via the images transformer in {a.path}"
+        )
+
+    return ArtifactAnalysis(artifact=a, findings=findings,
+                            recommendations=recommendations, risk_level=risk)
 
     return ArtifactAnalysis(artifact=a, findings=findings,
                             recommendations=recommendations, risk_level=risk)
@@ -117,6 +188,8 @@ _ANALYSERS = {
     "dockerfile": _analyse_dockerfile,
     "actions": _analyse_actions,
     "compose": _analyse_compose,
+    "helm": _analyse_helm,
+    "kustomize": _analyse_kustomize,
     "k8s": _analyse_k8s,
 }
 
@@ -178,6 +251,8 @@ _KIND_LABELS = {
     "dockerfile": "Dockerfiles",
     "actions": "GitHub Actions",
     "compose": "Docker Compose",
+    "helm": "Helm Charts",
+    "kustomize": "Kustomize",
     "k8s": "Kubernetes Manifests",
 }
 
@@ -207,7 +282,7 @@ def format_text(result: ScanResult) -> str:
     for a in result.analysis:
         by_kind.setdefault(a.artifact.kind, []).append(a)
 
-    for kind in ("dockerfile", "actions", "compose", "k8s"):
+    for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
         group = by_kind.get(kind, [])
         if not group:
             continue

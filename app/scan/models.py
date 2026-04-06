@@ -26,6 +26,18 @@ class DiscoveredArtifact:
             svcs = self.details.get("services", [])
             imgs = self.details.get("image_refs", [])
             return f"{len(svcs)} services, {len(imgs)} image refs"
+        if self.kind == "helm":
+            name = self.details.get("chart_name", "")
+            ver = self.details.get("chart_version", "")
+            imgs = self.details.get("image_refs", [])
+            label = f"{name}"
+            if ver:
+                label += f" {ver}"
+            return f"{label}, {len(imgs)} image refs"
+        if self.kind == "kustomize":
+            imgs = self.details.get("image_refs", [])
+            transformer = self.details.get("images_transformer", [])
+            return f"{len(transformer)} image overrides, {len(imgs)} image refs"
         if self.kind == "k8s":
             imgs = self.details.get("image_refs", [])
             k = self.details.get("resource_kind", "")

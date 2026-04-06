@@ -3,7 +3,7 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import yaml
 
@@ -244,11 +244,190 @@ class ComposeDiscoverer:
 
 
 # ---------------------------------------------------------------------------
-# Kubernetes Manifest Discoverer
+# Helm Chart Discoverer
+# ---------------------------------------------------------------------------
+
+class HelmDiscoverer:
+    name = "Helm Charts"
+
+    def discover(self, root: Path) -> list[DiscoveredArtifact]:
+        artifacts: list[DiscoveredArtifact] = []
+        seen_charts: set[Path] = set()
+
+        for chart_yaml in _rglob_filtered(root, "**/Chart.yaml"):
+            chart_dir = chart_yaml.parent.resolve()
+            if chart_dir in seen_charts:
+                continue
+            seen_charts.add(chart_dir)
+
+            chart_meta = self._parse_chart_yaml(chart_yaml)
+            values_images = self._parse_values(chart_dir)
+            template_images = self._scan_templates(chart_dir)
+
+            artifacts.append(DiscoveredArtifact(
+                kind="helm",
+                path=str(chart_yaml.parent.relative_to(root)),
+                details={
+                    "chart_name": chart_meta.get("name", chart_dir.name),
+                    "chart_version": chart_meta.get("version", ""),
+                    "values_images": values_images,
+                    "template_images": template_images,
+                    "image_refs": list(dict.fromkeys(values_images + template_images)),
+                },
+            ))
+        return artifacts
+
+    @staticmethod
+    def _parse_chart_yaml(path: Path) -> dict:
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _parse_values(chart_dir: Path) -> list[str]:
+        """Extract image references from values.yaml."""
+        images: list[str] = []
+        values_file = chart_dir / "values.yaml"
+        if not values_file.exists():
+            return images
+
+        try:
+            with open(values_file) as f:
+                data = yaml.safe_load(f)
+        except Exception:
+            return images
+
+        if not isinstance(data, dict):
+            return images
+
+        HelmDiscoverer._walk_values_images(data, images)
+        return list(dict.fromkeys(images))
+
+    @staticmethod
+    def _walk_values_images(obj: Any, images: list[str], key_path: str = "") -> None:
+        """Find image.repository + image.tag patterns in values."""
+        if isinstance(obj, dict):
+            # Common helm pattern: image.repository + image.tag
+            if "repository" in obj and isinstance(obj["repository"], str):
+                repo = obj["repository"]
+                tag = obj.get("tag", "latest")
+                if "/" in repo or "." in repo:
+                    images.append(f"{repo}:{tag}" if tag else repo)
+            # Also check for direct "image" string fields
+            if "image" in obj and isinstance(obj["image"], str):
+                img = obj["image"]
+                if "/" in img or ":" in img:
+                    images.append(img)
+            for k, v in obj.items():
+                HelmDiscoverer._walk_values_images(v, images, f"{key_path}.{k}")
+        elif isinstance(obj, list):
+            for item in obj:
+                HelmDiscoverer._walk_values_images(item, images, key_path)
+
+    @staticmethod
+    def _scan_templates(chart_dir: Path) -> list[str]:
+        """Find hardcoded image refs in templates (not Go template expressions)."""
+        images: list[str] = []
+        templates_dir = chart_dir / "templates"
+        if not templates_dir.is_dir():
+            return images
+
+        image_re = re.compile(r'image:\s*["\']?([^"\'\s{]+)')
+        for tpl in templates_dir.rglob("*.yaml"):
+            try:
+                for line in tpl.read_text(errors="replace").splitlines():
+                    m = image_re.search(line)
+                    if m:
+                        val = m.group(1)
+                        # Skip Go template expressions
+                        if "{{" in val or "}}" in val:
+                            continue
+                        if "/" in val or ":" in val:
+                            images.append(val)
+            except OSError:
+                continue
+        return list(dict.fromkeys(images))
+
+
+# ---------------------------------------------------------------------------
+# Kustomize Discoverer
+# ---------------------------------------------------------------------------
+
+class KustomizeDiscoverer:
+    name = "Kustomize"
+
+    def discover(self, root: Path) -> list[DiscoveredArtifact]:
+        artifacts: list[DiscoveredArtifact] = []
+
+        for name in ("kustomization.yaml", "kustomization.yml"):
+            for path in _rglob_filtered(root, f"**/{name}"):
+                data = self._load(path)
+                if not data:
+                    continue
+
+                images_config = data.get("images", [])
+                resource_images = self._scan_resources(path.parent, root)
+
+                artifacts.append(DiscoveredArtifact(
+                    kind="kustomize",
+                    path=str(path.relative_to(root)),
+                    details={
+                        "images_transformer": images_config,
+                        "resource_images": resource_images,
+                        "image_refs": list(dict.fromkeys(
+                            [f"{e.get('name', '')}:{e.get('newTag', e.get('newName', ''))}"
+                             for e in images_config if isinstance(e, dict)]
+                            + resource_images
+                        )),
+                        "resources": data.get("resources", []),
+                    },
+                ))
+        return artifacts
+
+    @staticmethod
+    def _load(path: Path) -> dict | None:
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _scan_resources(kustomize_dir: Path, root: Path) -> list[str]:
+        """Scan referenced resources for image refs."""
+        images: list[str] = []
+        image_re = re.compile(r'image:\s*["\']?([^"\'\s]+)')
+        for pattern in ("*.yaml", "*.yml"):
+            for f in kustomize_dir.glob(pattern):
+                if f.name.startswith("kustomization"):
+                    continue
+                try:
+                    for line in f.read_text(errors="replace").splitlines():
+                        m = image_re.search(line)
+                        if m and ("/" in m.group(1) or ":" in m.group(1)):
+                            images.append(m.group(1))
+                except OSError:
+                    continue
+        return list(dict.fromkeys(images))
+
+
+# ---------------------------------------------------------------------------
+# Raw Kubernetes Manifest Discoverer
 # ---------------------------------------------------------------------------
 
 class KubernetesDiscoverer:
     name = "Kubernetes Manifests"
+
+    def __init__(self) -> None:
+        self._claimed_paths: set[Path] = set()
+
+    def set_claimed_paths(self, paths: set[Path]) -> None:
+        """Paths already claimed by Helm/Kustomize/Compose/Actions discoverers."""
+        self._claimed_paths = paths
 
     def discover(self, root: Path) -> list[DiscoveredArtifact]:
         artifacts: list[DiscoveredArtifact] = []
@@ -257,7 +436,7 @@ class KubernetesDiscoverer:
         for pattern in ("**/*.yaml", "**/*.yml"):
             for path in _rglob_filtered(root, pattern):
                 resolved = path.resolve()
-                if resolved in seen:
+                if resolved in seen or resolved in self._claimed_paths:
                     continue
                 seen.add(resolved)
 
@@ -266,6 +445,8 @@ class KubernetesDiscoverer:
                 if rel.startswith(".github/"):
                     continue
                 if any(p in path.name.lower() for p in ("docker-compose", "compose")):
+                    continue
+                if path.name in ("Chart.yaml", "kustomization.yaml", "kustomization.yml"):
                     continue
 
                 for doc in self._load_yaml_docs(path):
@@ -289,7 +470,6 @@ class KubernetesDiscoverer:
 
     @staticmethod
     def _load_yaml_docs(path: Path) -> list[dict]:
-        """Load all YAML documents from a file (multi-doc support)."""
         try:
             with open(path) as f:
                 docs = list(yaml.safe_load_all(f))
@@ -299,21 +479,17 @@ class KubernetesDiscoverer:
 
     @staticmethod
     def _is_k8s_manifest(doc: dict) -> bool:
-        """Check if a YAML document looks like a Kubernetes manifest."""
         return "apiVersion" in doc and "kind" in doc
 
     @classmethod
     def _extract_images(cls, doc: dict) -> list[str]:
-        """Extract container image references from a k8s manifest."""
         images: list[str] = []
         cls._walk_containers(doc, images)
-        return list(dict.fromkeys(images))  # dedupe, preserve order
+        return list(dict.fromkeys(images))
 
     @classmethod
     def _walk_containers(cls, obj: Any, images: list[str]) -> None:
-        """Recursively find container image fields."""
         if isinstance(obj, dict):
-            # Direct container spec
             if "image" in obj and isinstance(obj["image"], str):
                 images.append(obj["image"])
             for v in obj.values():
@@ -327,9 +503,51 @@ class KubernetesDiscoverer:
 # Registry of all discoverers
 # ---------------------------------------------------------------------------
 
+# Instantiate discoverers — order matters: Helm and Kustomize run first
+# so they can claim paths before the raw K8s discoverer runs.
+_dockerfile_discoverer = DockerfileDiscoverer()
+_actions_discoverer = ActionsDiscoverer()
+_compose_discoverer = ComposeDiscoverer()
+_helm_discoverer = HelmDiscoverer()
+_kustomize_discoverer = KustomizeDiscoverer()
+_k8s_discoverer = KubernetesDiscoverer()
+
 ALL_DISCOVERERS: list[Discoverer] = [
-    DockerfileDiscoverer(),
-    ActionsDiscoverer(),
-    ComposeDiscoverer(),
-    KubernetesDiscoverer(),
+    _dockerfile_discoverer,
+    _actions_discoverer,
+    _compose_discoverer,
+    _helm_discoverer,
+    _kustomize_discoverer,
+    _k8s_discoverer,
 ]
+
+
+def discover_all(root: Path) -> list[DiscoveredArtifact]:
+    """Run all discoverers with path-claiming coordination."""
+    all_artifacts: list[DiscoveredArtifact] = []
+    claimed: set[Path] = set()
+
+    # Run Helm, Kustomize, Compose first to claim their paths
+    for discoverer in [_dockerfile_discoverer, _actions_discoverer,
+                       _compose_discoverer, _helm_discoverer,
+                       _kustomize_discoverer]:
+        found = discoverer.discover(root)
+        all_artifacts.extend(found)
+        for a in found:
+            # Claim all files under helm chart dirs and kustomize dirs
+            artifact_path = root / a.path
+            if artifact_path.is_dir():
+                for f in artifact_path.rglob("*"):
+                    claimed.add(f.resolve())
+            else:
+                claimed.add(artifact_path.resolve())
+                # For kustomize, claim the whole directory
+                if a.kind == "kustomize":
+                    for f in artifact_path.parent.rglob("*"):
+                        claimed.add(f.resolve())
+
+    # Raw K8s gets the leftovers
+    _k8s_discoverer.set_claimed_paths(claimed)
+    all_artifacts.extend(_k8s_discoverer.discover(root))
+
+    return all_artifacts

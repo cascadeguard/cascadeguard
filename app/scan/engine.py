@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from .discoverers import ALL_DISCOVERERS, _EXCLUDED_DIRS
+from .discoverers import discover_all, _EXCLUDED_DIRS
 from .models import DiscoveredArtifact, ScanResult
 from .report import analyse, build_summary, format_text, format_json
 
@@ -12,6 +12,8 @@ _KIND_LABELS = {
     "dockerfile": "Dockerfiles",
     "actions": "GitHub Actions",
     "compose": "Docker Compose",
+    "helm": "Helm Charts",
+    "kustomize": "Kustomize",
     "k8s": "Kubernetes Manifests",
 }
 
@@ -31,10 +33,7 @@ def run_scan(
         return 1
 
     # --- Discovery ---
-    all_artifacts: list[DiscoveredArtifact] = []
-    for discoverer in ALL_DISCOVERERS:
-        found = discoverer.discover(root)
-        all_artifacts.extend(found)
+    all_artifacts = discover_all(root)
 
     if not all_artifacts:
         print(f"No container artifacts found in {root}")
@@ -95,7 +94,7 @@ def _interactive_select(artifacts: list[DiscoveredArtifact]) -> list[DiscoveredA
 
     indexed: list[tuple[int, DiscoveredArtifact]] = []
     idx = 1
-    for kind in ("dockerfile", "actions", "compose", "k8s"):
+    for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
         group = by_kind.get(kind, [])
         if not group:
             continue
