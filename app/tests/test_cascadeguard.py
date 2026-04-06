@@ -49,6 +49,7 @@ def _args(**kwargs):
         dockerfile=None,
         branch=None,
         rebuild_delay=None,
+        auto_rebuild=False,
         image=None,
     )
     defaults.update(kwargs)
@@ -227,6 +228,36 @@ class TestCmdEnrol:
             images = yaml.safe_load(fh)
         assert len(images) == 2
         assert images[1]["name"] == "second"
+
+    def test_enrol_auto_rebuild_flag(self, tmp_path):
+        f = tmp_path / "images.yaml"
+        rc = cmd_enrol(
+            _args(
+                images_yaml=str(f),
+                name="app",
+                registry="ghcr.io",
+                repository="org/app",
+                auto_rebuild=True,
+            )
+        )
+        assert rc == 0
+        with open(f) as fh:
+            images = yaml.safe_load(fh)
+        assert images[0]["autoRebuild"] is True
+
+    def test_enrol_auto_rebuild_false_by_default(self, tmp_path):
+        f = tmp_path / "images.yaml"
+        cmd_enrol(
+            _args(
+                images_yaml=str(f),
+                name="app",
+                registry="ghcr.io",
+                repository="org/app",
+            )
+        )
+        with open(f) as fh:
+            images = yaml.safe_load(fh)
+        assert "autoRebuild" not in images[0]
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +606,49 @@ class TestParser:
         parser = build_parser()
         args = parser.parse_args(["images", "--images-yaml", "/tmp/custom.yaml", "validate"])
         assert args.images_yaml == "/tmp/custom.yaml"
+
+    def test_images_enrol_images_yaml_after_subcommand(self):
+        """CAS-267: --images-yaml must be usable after `enrol` subcommand."""
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "images",
+                "enrol",
+                "--images-yaml", "/tmp/custom.yaml",
+                "--name", "myapp",
+                "--registry", "ghcr.io",
+                "--repository", "org/myapp",
+            ]
+        )
+        assert args.images_yaml == "/tmp/custom.yaml"
+
+    def test_images_enrol_auto_rebuild_flag(self):
+        """CAS-268: --auto-rebuild flag must be accepted by `images enrol`."""
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "images",
+                "enrol",
+                "--name", "myapp",
+                "--registry", "ghcr.io",
+                "--repository", "org/myapp",
+                "--auto-rebuild",
+            ]
+        )
+        assert args.auto_rebuild is True
+
+    def test_images_enrol_auto_rebuild_default_false(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "images",
+                "enrol",
+                "--name", "myapp",
+                "--registry", "ghcr.io",
+                "--repository", "org/myapp",
+            ]
+        )
+        assert args.auto_rebuild is False
 
     def test_state_dir_override(self):
         parser = build_parser()
