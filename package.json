@@ -14,5 +14,5 @@
   },
   "keywords": ["kargo", "integration-test", "cascadeguard"],
   "author": "Platform Team",
-  "license": "MIT"
+  "license": "BUSL-1.1"
 }
