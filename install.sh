@@ -22,9 +22,9 @@
 
 set -eu
 
-CASCADEGUARD_REPO="https://github.com/cascadeguard/cascadeguard.git"
-CASCADEGUARD_BRANCH="main"
-CASCADEGUARD_HOME="${HOME}/.cascadeguard"
+CASCADEGUARD_REPO="${CASCADEGUARD_REPO:-https://github.com/cascadeguard/cascadeguard.git}"
+CASCADEGUARD_BRANCH="${CASCADEGUARD_BRANCH:-main}"
+CASCADEGUARD_HOME="${CASCADEGUARD_HOME:-${HOME}/.cascadeguard}"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=11
 
@@ -145,6 +145,12 @@ print_environment() {
   fi
 
   printf "  ──────────────────────────────────────\n"
+
+  if [ "$CASCADEGUARD_BRANCH" != "main" ]; then
+    printf "  Branch       ${YELLOW}${CASCADEGUARD_BRANCH}${RESET} ${DIM}(non-default)${RESET}\n"
+    printf "  ──────────────────────────────────────\n"
+  fi
+
   printf "\n"
 }
 
