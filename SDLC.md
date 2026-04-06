@@ -28,6 +28,7 @@ An issue enters the backlog when it has:
 - A clear title and description (what, not how).
 - An assigned priority label (`critical`, `high`, `medium`, `low`).
 - Acceptance criteria or a definition of what "done" looks like.
+- **Explicit delivery scope** for feature/enhancement issues: one of `full-stack`, `backend-only`, `frontend-only`, `infra`, `docs`, or `ci`. Issues without explicit scope will be sent back during triage.
 
 ### Ready
 
@@ -62,6 +63,13 @@ A change is done when it is merged to `main` with all checks passing. The origin
 
 - **Bug reports**: Include steps to reproduce, expected vs. actual behavior, and environment details.
 - **Feature requests**: Describe the problem being solved, proposed solution, and alternatives considered.
+- **Scope declaration (required for features/enhancements)**: State the delivery scope explicitly in the issue body:
+  - `full-stack` — requires both API/backend and frontend changes
+  - `backend-only` — API/backend changes only
+  - `frontend-only` — UI changes only
+  - `infra` / `docs` / `ci` — non-application changes
+
+  If omitted, the issue will be returned during triage with a request to clarify before it enters the backlog.
 - **One concern per issue** — don't combine unrelated changes.
 
 ### Labels
