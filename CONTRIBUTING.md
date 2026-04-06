@@ -81,4 +81,4 @@ Open a GitHub issue with:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same license as the project.
+CascadeGuard is licensed under the [Business Source License 1.1](LICENSE) (BUSL-1.1). By contributing, you agree that your contributions will be licensed under the same terms. See the [Licensing section in the README](README.md#licensing) for details on what is and is not permitted.
