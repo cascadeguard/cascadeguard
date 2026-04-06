@@ -12,6 +12,45 @@ class DiscoveredArtifact:
     path: str       # relative to scan root
     details: dict[str, Any] = field(default_factory=dict)
 
+    # Generic directory names to skip when inferring component name
+    _GENERIC_DIRS = frozenset({
+        "app", "src", "docker", "build", "deploy", "charts", "templates",
+        "base", "overlays", "components", "services", "infra", "k8s",
+        "manifests", "kustomize", "helm", ".github", "workflows",
+    })
+
+    @property
+    def component_name(self) -> str:
+        """Infer a short component name from the path."""
+        from pathlib import PurePosixPath
+
+        # Helm: use chart_name directly
+        if self.kind == "helm":
+            return self.details.get("chart_name", "") or self._name_from_path()
+
+        # Actions: use workflow filename stem
+        if self.kind == "actions":
+            return PurePosixPath(self.path).stem
+
+        return self._name_from_path()
+
+    def _name_from_path(self) -> str:
+        """Walk up the path, skip generic names, return 1-2 meaningful segments."""
+        from pathlib import PurePosixPath
+        parts = list(PurePosixPath(self.path).parent.parts)
+
+        # Filter out generic names
+        meaningful = [p for p in parts if p.lower() not in self._GENERIC_DIRS]
+
+        if not meaningful:
+            # Fall back to the filename stem
+            return PurePosixPath(self.path).stem
+
+        # Return last 1-2 meaningful segments
+        if len(meaningful) >= 2:
+            return f"{meaningful[-2]}/{meaningful[-1]}"
+        return meaningful[-1]
+
     @property
     def summary(self) -> str:
         """One-line summary for display."""

@@ -269,8 +269,8 @@ _KIND_ACTIONS = {
     "dockerfile": "cascadeguard images pin",
     "actions": "cascadeguard actions pin",
     "compose": "cascadeguard images pin",
-    "helm": "Pin tags in values.yaml",
-    "kustomize": "Add images transformer",
+    "helm": "cascadeguard images pin",
+    "kustomize": "cascadeguard images pin",
     "k8s": "cascadeguard images pin",
 }
 
@@ -293,12 +293,11 @@ def format_text(result: ScanResult) -> str:
     ))
     console.print()
 
-    # Summary table
+    # Summary table — no Action column, deduplicated actions at the bottom
     table = Table(show_edge=False, pad_edge=False, expand=True)
     table.add_column("Kind", style="bold", min_width=20)
     table.add_column("Found", justify="right", min_width=6)
     table.add_column("Issues", justify="right", min_width=7)
-    table.add_column("Action", min_width=30)
 
     by_kind: dict[str, list[ArtifactAnalysis]] = {}
     for a in result.analysis:
@@ -306,6 +305,8 @@ def format_text(result: ScanResult) -> str:
 
     total_found = 0
     total_issues = 0
+    # Collect actions: action_text -> list of kind labels
+    action_counts: dict[str, dict] = {}
 
     for kind in ("dockerfile", "actions", "compose", "helm", "kustomize", "k8s"):
         group = by_kind.get(kind, [])
@@ -322,10 +323,15 @@ def format_text(result: ScanResult) -> str:
             label,
             str(len(group)),
             f"[{issue_style}]{issue_text}[/{issue_style}]",
-            f"[dim]{action}[/dim]" if issues > 0 else "",
         )
         total_found += len(group)
         total_issues += issues
+
+        if issues > 0 and action:
+            if action not in action_counts:
+                action_counts[action] = {"count": 0, "kinds": []}
+            action_counts[action]["count"] += issues
+            action_counts[action]["kinds"].append(label)
 
     table.add_section()
     issue_style = "bold red" if total_issues > 0 else "green"
@@ -333,10 +339,17 @@ def format_text(result: ScanResult) -> str:
         "[bold]Total[/bold]",
         f"[bold]{total_found}[/bold]",
         f"[{issue_style}][bold]{total_issues}[/bold][/{issue_style}]",
-        "",
     )
 
     console.print(table)
+    console.print()
+
+    # Deduplicated recommended actions
+    if action_counts:
+        console.print("[bold]Recommended actions:[/bold]")
+        for action, info in action_counts.items():
+            kinds_str = ", ".join(info["kinds"])
+            console.print(f"  [green]→[/green] {action}  [dim]— {info['count']} issues across {kinds_str}[/dim]")
     console.print()
 
     return buf.getvalue()
@@ -390,7 +403,9 @@ def format_markdown(result: ScanResult) -> str:
         if actionable:
             for a in actionable:
                 icon = _RISK_ICONS.get(a.risk_level, "ℹ")
-                lines.append(f"### {icon} `{a.artifact.path}`")
+                lines.append(f"### {icon} {a.artifact.component_name}")
+                lines.append("")
+                lines.append(f"**Path:** `{a.artifact.path}`")
                 lines.append("")
                 if a.findings:
                     for f in a.findings:
