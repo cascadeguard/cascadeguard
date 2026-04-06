@@ -401,28 +401,44 @@ def format_markdown(result: ScanResult) -> str:
         info_only = [a for a in group if a.risk_level == "info"]
 
         if actionable:
+            lines.append("| | Component | Findings | Recommendation |")
+            lines.append("|---|-----------|----------|----------------|")
             for a in actionable:
                 icon = _RISK_ICONS.get(a.risk_level, "ℹ")
-                lines.append(f"### {icon} {a.artifact.component_name}")
-                lines.append("")
-                lines.append(f"**Path:** `{a.artifact.path}`")
-                lines.append("")
-                if a.findings:
-                    for f in a.findings:
-                        lines.append(f"- {f}")
-                    lines.append("")
-                if a.recommendations:
-                    lines.append("**Recommendations:**")
-                    lines.append("")
+                name = a.artifact.component_name
+
+                # Compact findings: just the headline, not every image
+                headline = a.findings[0] if a.findings else ""
+                unpinned_count = sum(1 for f in a.findings if "latest" in f or "mutable" in f)
+                if unpinned_count > 1:
+                    headline = f"{unpinned_count} unpinned images"
+                elif unpinned_count == 1:
+                    # Use the specific image finding
+                    headline = next((f for f in a.findings if "latest" in f or "mutable" in f), headline)
+
+                rec_str = a.recommendations[0] if a.recommendations else ""
+                lines.append(f"| {icon} | {name} | {headline} | {rec_str} |")
+            lines.append("")
+
+            # Detail: full findings + paths (collapsed)
+            lines.append("<details><summary>Details</summary>")
+            lines.append("")
+            for a in actionable:
+                lines.append(f"**{a.artifact.component_name}** — `{a.artifact.path}`")
+                for f in a.findings:
+                    lines.append(f"- {f}")
+                if len(a.recommendations) > 1:
                     for r in a.recommendations:
-                        lines.append(f"- `{r}`" if r.startswith("Run:") else f"- {r}")
-                    lines.append("")
+                        lines.append(f"- → {r}")
+                lines.append("")
+            lines.append("</details>")
+            lines.append("")
 
         if info_only:
             lines.append(f"<details><summary>{len(info_only)} with no findings</summary>")
             lines.append("")
             for a in info_only:
-                lines.append(f"- `{a.artifact.path}`")
+                lines.append(f"- {a.artifact.component_name} — `{a.artifact.path}`")
             lines.append("")
             lines.append("</details>")
             lines.append("")
