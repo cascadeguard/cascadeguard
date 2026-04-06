@@ -289,7 +289,11 @@ def format_text(result: ScanResult) -> str:
         label = _KIND_LABELS.get(kind, kind)
         lines.append(f"{label} ({len(group)})")
 
-        for a in group:
+        # Split into actionable vs info-only
+        actionable = [a for a in group if a.risk_level != "info"]
+        info_only = [a for a in group if a.risk_level == "info"]
+
+        for a in actionable:
             icon = _RISK_ICONS.get(a.risk_level, " ")
             lines.append(f"  {icon} {a.artifact.path}")
             lines.append(f"    {a.artifact.summary}")
@@ -297,6 +301,10 @@ def format_text(result: ScanResult) -> str:
                 lines.append(f"    · {f}")
             for r in a.recommendations:
                 lines.append(f"    → {r}")
+
+        if info_only:
+            lines.append(f"  ℹ {len(info_only)} with no findings")
+
         lines.append("")
 
     # Summary
