@@ -339,8 +339,8 @@ This section defines who is responsible for keeping engineering work flowing wit
 
 | Role | Operational Responsibility |
 |---|---|
-| **IC Engineer** | Own CI green status, merge conflict resolution, status updates on assigned issues |
-| **CTO** | PR review (1h SLA), blocker triage (<30min), hourly issue health scans, unassigned issue triage |
+| **IC Engineer** | Pull work from backlog, own CI green status, merge conflict resolution, status updates |
+| **CTO** | Backlog prioritisation, PR review (1h SLA), blocker triage (<30min), hourly health scans |
 | **Product Owner** | Acceptance validation for user-facing changes (<2h), backlog health (weekly) |
 | **Board** | Strategic review only — async daily summary + weekly sync |
 
@@ -361,15 +361,33 @@ These status transitions require prompt action:
 |---|---|---|
 | Issues `in_progress` with no activity >1h | CTO | Request status update from assignee |
 | Issues `in_progress` with no activity >2h | CTO | Escalate or reassign |
-| Issues in `todo` with no assignee | CTO | Assign to appropriate engineer or escalate to board if unclear |
+| Issues in `todo` with no assignee >2h | CTO | Verify backlog priority is clear; escalate to board if ambiguous |
 | PRs open >1h with merge conflicts | CTO | Comment asking engineer to rebase |
 | PRs open >4h with no review activity | CTO | Review or close with note to reopen when ready |
 | Issues `blocked` >2h | CTO | Escalate to CEO if unresolvable |
+
+### Work Assignment — Pull Model
+
+Engineers pull work from the prioritised backlog rather than receiving assignments from the CTO. This prevents over-assignment and gives engineers ownership of their capacity.
+
+**How it works:**
+
+1. **CTO and PO maintain backlog priority.** Issues in `todo` are ordered by priority. The CTO ensures technical context and scope are clear before an issue is ready for pickup.
+2. **Engineers pull when they have capacity.** When an engineer finishes work or has fewer than 3 active issues (`todo` + `in_progress`), they pick the highest-priority unassigned `todo` item that matches their skills.
+3. **WIP limit: max 3 active issues per engineer.** Engineers must not pull new work if they already have 3 active issues.
+4. **No duplicate tasks.** If an existing task covers the work, reopen/unblock it instead of creating a new one.
+5. **Blocked task hygiene.** When a task is blocked, either unblock it or escalate within 1 heartbeat. Do not leave blocked tasks accumulating.
+
+**CTO may still assign directly when:**
+- A critical/urgent issue needs a specific engineer's expertise
+- An engineer is idle and hasn't pulled work (escalation path)
+- Cross-team coordination requires explicit routing
 
 ### Engineer Responsibilities
 
 Engineers are expected to:
 
+- **Pull work from the backlog** — when you have capacity (fewer than 3 active issues), pick the highest-priority unassigned `todo` item that matches your skills.
 - **Keep CI green** — do not request review until all checks pass.
 - **Resolve merge conflicts** — the PR author owns keeping their branch up to date with `main`.
 - **Update issue status** — move issues to `blocked` with a comment explaining the blocker. Do not leave issues silently stalled.
@@ -394,7 +412,8 @@ Engineers are expected to:
 | Review PRs (technical) | C | — | **R/A** | — |
 | Acceptance validation (user-facing) | I | **R/A** | — | — |
 | Daily stuck-issue scan | — | — | **R** | I |
-| Triage unassigned todo issues | — | — | **R** | I |
+| Pull work from prioritised backlog | **R** | — | I | — |
+| Maintain backlog priority | — | C | **R** | I |
 | Escalate strategic blockers | — | — | **R** | **A** |
 | Weekly roadmap review | — | C | **R** | **A** |
 
