@@ -4,14 +4,6 @@
 
 CascadeGuard is a container image security tool that integrates with popular build and deployment pipelines.
 
-## SDLC Process
-
-The software development lifecycle for this project is defined in:
-
-**[`SDLC.md`](SDLC.md)**
-
-This is the canonical process for how features move from idea to production.
-
 ## Key Requirements
 
 ### Pull Requests
@@ -40,7 +32,6 @@ This is the canonical process for how features move from idea to production.
 
 | Artefact | Path |
 |---|---|
-| SDLC process | `SDLC.md` |
 | ADRs | `docs/adr/` |
 | Contribution guide | `CONTRIBUTING.md` |
 | Project instructions (cross-repo) | [cascadeguard-docs/CLAUDE.md](https://github.com/cascadeguard/cascadeguard-docs/blob/main/CLAUDE.md) |
@@ -58,7 +49,7 @@ These artifacts belong in the **private workspace root**, not here. If you need 
 
 **Belongs in this repo:**
 - Source code, tests, and public documentation
-- SDLC process, technical ADRs, contribution guides
+- Technical ADRs, contribution guides
 - CI/CD configuration and build scripts
 
 ## Tech Stack
