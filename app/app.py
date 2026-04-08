@@ -7,6 +7,7 @@ Commands:
   images enrol          Enrol a new image in images.yaml
   images check          Check image and base image states
   images status         Show status of all images
+  images check-upstream Query Docker Hub for new upstream tags across enrolled images
   pipeline run          Run full pipeline (validate -> check -> build -> deploy -> test)
   pipeline build        Trigger a build via GitHub Actions
   pipeline deploy       Deploy via ArgoCD
@@ -1393,13 +1394,105 @@ def cmd_actions(args) -> int:
     }[args.actions_command](args)
 
 
+def cmd_images_check_upstream(args) -> int:
+    """Query Docker Hub for new upstream tags across enrolled images."""
+    DOCKER_HUB_TAGS_URL = (
+        "https://hub.docker.com/v2/repositories/{namespace}/{image}"
+        "/tags?page_size=100&ordering=last_updated"
+    )
+
+    def get_dockerhub_tags(namespace: str, image: str) -> List[str]:
+        url = DOCKER_HUB_TAGS_URL.format(namespace=namespace, image=image)
+        tags: List[str] = []
+        page = 0
+        try:
+            while url and page < 10:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                tags.extend(t["name"] for t in data.get("results", []))
+                url = data.get("next") or ""
+                page += 1
+        except Exception as exc:
+            logger.warning(f"Could not fetch tags for {namespace}/{image}: {exc}")
+        return tags
+
+    def is_stable_tag(tag: str) -> bool:
+        skip = {"latest", "edge", "nightly", "testing"}
+        if tag in skip:
+            return False
+        for suffix in ("-rc", "-alpha", "-beta", "-dev", "-test", ".rc", "-SNAPSHOT"):
+            if suffix in tag.lower():
+                return False
+        if tag.startswith("sha256:") or len(tag) == 64:
+            return False
+        return True
+
+    images_yaml = Path(args.images_yaml)
+    if not images_yaml.exists():
+        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
+        return 1
+
+    with open(images_yaml) as f:
+        all_images = yaml.safe_load(f) or []
+
+    if not isinstance(all_images, list):
+        print("Error: images.yaml must be a list", file=sys.stderr)
+        return 1
+
+    if args.image:
+        images_to_check = [img for img in all_images if img.get("name") == args.image]
+        if not images_to_check:
+            print(f"Error: image '{args.image}' not found in images.yaml", file=sys.stderr)
+            return 1
+    else:
+        images_to_check = [img for img in all_images if img.get("enabled", True)]
+
+    findings: List[Dict] = []
+
+    for img in images_to_check:
+        name = img["image"]
+        namespace = img.get("namespace", "library")
+        current_tags: Set[str] = set(img.get("latest_stable_tags", []))
+
+        logger.info(f"Checking {name} (namespace={namespace})")
+        upstream_tags = get_dockerhub_tags(namespace, name)
+        stable_upstream = {t for t in upstream_tags if is_stable_tag(t)}
+
+        new_tags = stable_upstream - current_tags
+        surfaced = []
+        for t in new_tags:
+            base = t.split("-")[0].split(".")[0]
+            if not current_tags or any(
+                c.split("-")[0].split(".")[0] == base for c in current_tags
+            ):
+                surfaced.append(t)
+
+        if surfaced:
+            findings.append({"image": name, "new_tags": sorted(surfaced)})
+
+    has_new = len(findings) > 0
+
+    if args.format == "json":
+        print(json.dumps(findings, indent=2))
+    else:
+        if not findings:
+            print("No new upstream tags detected.")
+        else:
+            for entry in findings:
+                print(f"{entry['image']}: {', '.join(entry['new_tags'])}")
+
+    return 1 if has_new else 0
+
+
 def cmd_images(args) -> int:
     """Dispatch 'images' subcommands."""
     return {
-        "validate": cmd_validate,
-        "enrol":    cmd_enrol,
-        "check":    cmd_check,
-        "status":   cmd_status,
+        "validate":       cmd_validate,
+        "enrol":          cmd_enrol,
+        "check":          cmd_check,
+        "status":         cmd_status,
+        "check-upstream": cmd_images_check_upstream,
     }[args.images_command](args)
 
 
@@ -1552,6 +1645,23 @@ Commands:
 
     # images status
     images_sub.add_parser("status", help="Show status of all images")
+
+    # images check-upstream
+    images_check_upstream = images_sub.add_parser(
+        "check-upstream",
+        help="Query Docker Hub for new upstream tags across enrolled images",
+    )
+    images_check_upstream.add_argument(
+        "--image",
+        default=None,
+        help="Scope check to a single image name (as listed in images.yaml)",
+    )
+    images_check_upstream.add_argument(
+        "--format",
+        choices=["json", "table"],
+        default="table",
+        help="Output format: table (default) or json",
+    )
 
     # ---------------------------------------------------------------------------
     # pipeline — CI/CD orchestration
