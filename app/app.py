@@ -994,7 +994,7 @@ def _parse_trivy_cves(trivy_path: Path) -> List[Dict]:
         data = json.load(f)
     findings = []
     for result in data.get("Results", []):
-        for vuln in result.get("Vulnerabilities", []):
+        for vuln in (result.get("Vulnerabilities") or []):
             findings.append({
                 "cve": vuln.get("VulnerabilityID", "UNKNOWN"),
                 "severity": vuln.get("Severity", "Unknown").capitalize(),

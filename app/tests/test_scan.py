@@ -106,6 +106,14 @@ class TestParseTrivy:
         assert findings[0]["severity"] == "Critical"
         assert findings[1]["cve"] == "CVE-2026-9999"
 
+    def test_parse_trivy_null_vulnerabilities(self, tmp_path):
+        # Trivy outputs "Vulnerabilities": null (not []) for clean images
+        trivy_file = tmp_path / "trivy.json"
+        trivy_file.write_text(json.dumps({
+            "Results": [{"Type": "alpine", "Vulnerabilities": None}]
+        }))
+        assert _parse_trivy_cves(trivy_file) == []
+
     def test_parse_trivy_missing_file(self, tmp_path):
         assert _parse_trivy_cves(tmp_path / "nope.json") == []
 
