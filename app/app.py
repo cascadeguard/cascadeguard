@@ -785,38 +785,168 @@ def cmd_enrol(args) -> int:
     return 0
 
 
+def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Optional[str] = None) -> Optional[str]:
+    """
+    Fetch the current manifest digest for registry/repository:tag via the registry v2 API.
+
+    Handles Docker Hub (docker.io) and GHCR (ghcr.io).  Returns the
+    Docker-Content-Digest header value (e.g. 'sha256:abc…') or None when the
+    registry is unreachable or the image/tag does not exist.
+    """
+    ACCEPT = (
+        "application/vnd.docker.distribution.manifest.v2+json,"
+        "application/vnd.oci.image.manifest.v1+json,"
+        "application/vnd.oci.image.index.v1+json,"
+        "application/vnd.docker.distribution.manifest.list.v2+json"
+    )
+
+    def _get_token(auth_url: str, creds: Optional[str] = None) -> str:
+        req = urllib.request.Request(auth_url)
+        if creds:
+            import base64
+            req.add_header("Authorization", f"Basic {base64.b64encode(creds.encode()).decode()}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return data.get("token") or data.get("access_token") or ""
+
+    def _head_manifest(manifest_url: str, bearer: str) -> Optional[str]:
+        req = urllib.request.Request(manifest_url, method="HEAD")
+        req.add_header("Authorization", f"Bearer {bearer}")
+        req.add_header("Accept", ACCEPT)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.headers.get("Docker-Content-Digest")
+
+    try:
+        if registry in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
+            auth_url = (
+                f"https://auth.docker.io/token"
+                f"?service=registry.docker.io&scope=repository:{repository}:pull"
+            )
+            bearer = _get_token(auth_url)
+            manifest_url = f"https://registry-1.docker.io/v2/{repository}/manifests/{tag}"
+            return _head_manifest(manifest_url, bearer)
+
+        elif registry == "ghcr.io":
+            ghcr_token = token or os.environ.get("GHCR_TOKEN") or os.environ.get("GITHUB_TOKEN")
+            creds = f":{ghcr_token}" if ghcr_token else None
+            auth_url = (
+                f"https://ghcr.io/token"
+                f"?service=ghcr.io&scope=repository:{repository}:pull"
+            )
+            bearer = _get_token(auth_url, creds)
+            manifest_url = f"https://ghcr.io/v2/{repository}/manifests/{tag}"
+            return _head_manifest(manifest_url, bearer)
+
+        else:
+            # Generic registry v2 — attempt anonymous
+            auth_url = (
+                f"https://{registry}/token"
+                f"?service={registry}&scope=repository:{repository}:pull"
+            )
+            bearer = _get_token(auth_url)
+            manifest_url = f"https://{registry}/v2/{repository}/manifests/{tag}"
+            return _head_manifest(manifest_url, bearer)
+
+    except Exception as exc:
+        logger.warning(f"Could not query {registry}/{repository}:{tag}: {exc}")
+        return None
+
+
 def cmd_check(args) -> int:
-    """Check image and base image states from state files."""
+    """Check enrolled images against the live registry for digest drift."""
     state_dir = Path(args.state_dir)
     images_dir = state_dir / "images"
     base_images_dir = state_dir / "base-images"
 
-    if images_dir.exists():
-        print("Application images:")
-        for state_file in sorted(images_dir.glob("*.yaml")):
-            with open(state_file) as f:
-                state = yaml.safe_load(f) or {}
-            name = state.get("name", state_file.stem)
-            digest = state.get("currentDigest") or "null"
-            last_built = state.get("lastBuilt") or "never"
-            status = state.get("discoveryStatus", "unknown")
-            print(f"  {name}: digest={digest} lastBuilt={last_built} status={status}")
-    else:
-        print("No application images found")
+    image_filter: Optional[str] = getattr(args, "image", None)
+    fmt: str = getattr(args, "format", "table")
 
+    results: List[Dict] = []
+
+    # ── Base images ────────────────────────────────────────────────────────────
     if base_images_dir.exists():
-        print("Base images:")
         for state_file in sorted(base_images_dir.glob("*.yaml")):
             with open(state_file) as f:
                 state = yaml.safe_load(f) or {}
             name = state.get("name", state_file.stem)
-            digest = state.get("currentDigest") or "null"
-            last_updated = state.get("lastUpdated") or "never"
-            print(f"  {name}: digest={digest} lastUpdated={last_updated}")
-    else:
-        print("No base images found")
+            if image_filter and name != image_filter:
+                continue
 
-    return 0
+            registry = state.get("registry", "docker.io")
+            repository = state.get("repository", "")
+            tag = str(state.get("tag", "")) if state.get("tag") else ""
+            recorded_digest = state.get("currentDigest") or None
+
+            if not repository or not tag:
+                results.append({"image": name, "status": "skipped", "reason": "no registry coordinates"})
+                continue
+
+            live_digest = _fetch_manifest_digest(registry, repository, tag)
+            if live_digest is None:
+                results.append({"image": name, "status": "error", "reason": "registry unreachable"})
+            elif recorded_digest is None:
+                results.append({"image": name, "status": "unknown", "reason": "no local digest recorded"})
+            elif live_digest == recorded_digest:
+                results.append({"image": name, "status": "ok", "recorded": recorded_digest, "live": live_digest})
+            else:
+                results.append({"image": name, "status": "drift", "recorded": recorded_digest, "live": live_digest})
+
+    # ── Application images ──────────────────────────────────────────────────────
+    if images_dir.exists():
+        for state_file in sorted(images_dir.glob("*.yaml")):
+            with open(state_file) as f:
+                state = yaml.safe_load(f) or {}
+            name = state.get("name", state_file.stem)
+            if image_filter and name != image_filter:
+                continue
+
+            enrollment = state.get("enrollment") or {}
+            registry = enrollment.get("registry", "ghcr.io")
+            repository = enrollment.get("repository", "")
+            tag = str(state.get("currentVersion", "") or "")
+            recorded_digest = state.get("currentDigest") or None
+
+            if not repository or not tag:
+                results.append({"image": name, "status": "skipped", "reason": "no version/tag recorded yet"})
+                continue
+
+            live_digest = _fetch_manifest_digest(registry, repository, tag)
+            if live_digest is None:
+                results.append({"image": name, "status": "error", "reason": "registry unreachable"})
+            elif recorded_digest is None:
+                results.append({"image": name, "status": "unknown", "reason": "no local digest recorded"})
+            elif live_digest == recorded_digest:
+                results.append({"image": name, "status": "ok", "recorded": recorded_digest, "live": live_digest})
+            else:
+                results.append({"image": name, "status": "drift", "recorded": recorded_digest, "live": live_digest})
+
+    if image_filter and not results:
+        print(f"Error: image '{image_filter}' not found in state dir", file=sys.stderr)
+        return 1
+
+    has_drift = any(r["status"] == "drift" for r in results)
+
+    if fmt == "json":
+        print(json.dumps(results, indent=2))
+    else:
+        if not results:
+            print("No enrolled images found.")
+        else:
+            for r in results:
+                status = r["status"]
+                name = r["image"]
+                if status == "ok":
+                    print(f"  {name}: ok ({r['live']})")
+                elif status == "drift":
+                    print(f"  {name}: DRIFT recorded={r['recorded']} live={r['live']}")
+                elif status == "error":
+                    print(f"  {name}: error ({r['reason']})")
+                elif status == "skipped":
+                    print(f"  {name}: skipped ({r['reason']})")
+                elif status == "unknown":
+                    print(f"  {name}: unknown ({r['reason']})")
+
+    return 1 if has_drift else 0
 
 
 def cmd_build(args) -> int:
@@ -1641,7 +1771,21 @@ Commands:
     )
 
     # images check
-    images_sub.add_parser("check", help="Check image and base image states")
+    images_check = images_sub.add_parser(
+        "check",
+        help="Query the registry for digest drift on enrolled images",
+    )
+    images_check.add_argument(
+        "--image",
+        default=None,
+        help="Scope check to a single image name (state file stem)",
+    )
+    images_check.add_argument(
+        "--format",
+        choices=["json", "table"],
+        default="table",
+        help="Output format: table (default) or json",
+    )
 
     # images status
     images_sub.add_parser("status", help="Show status of all images")
