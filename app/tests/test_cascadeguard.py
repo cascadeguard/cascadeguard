@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app import (
     ArgoCDProvider,
     GitHubActionsProvider,
+    _fetch_manifest_digest,
     build_parser,
     cmd_check,
     cmd_deploy,
@@ -52,6 +53,7 @@ def _args(**kwargs):
         rebuild_delay=None,
         auto_rebuild=False,
         image=None,
+        format="table",
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -266,43 +268,235 @@ class TestCmdEnrol:
 # ---------------------------------------------------------------------------
 
 
+DIGEST_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+DIGEST_B = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+class TestFetchManifestDigest:
+    """Unit tests for _fetch_manifest_digest (network isolated)."""
+
+    def _mock_urlopen(self, token_digest_pairs):
+        """Return a side-effect list: first call returns token JSON, second returns digest header."""
+        calls = iter(token_digest_pairs)
+
+        def _urlopen(req, timeout=10):
+            token_json, digest = next(calls)
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({"token": token_json}).encode()
+            resp.headers = {"Docker-Content-Digest": digest} if digest else {}
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        return _urlopen
+
+    def test_dockerhub_returns_digest(self):
+        responses = [("tok", None), (None, DIGEST_A)]
+        with patch("urllib.request.urlopen", side_effect=self._mock_urlopen(responses)):
+            result = _fetch_manifest_digest("docker.io", "library/node", "22")
+        assert result == DIGEST_A
+
+    def test_ghcr_returns_digest(self):
+        responses = [("tok", None), (None, DIGEST_A)]
+        with patch("urllib.request.urlopen", side_effect=self._mock_urlopen(responses)):
+            result = _fetch_manifest_digest("ghcr.io", "myorg/myapp", "1.0.0")
+        assert result == DIGEST_A
+
+    def test_network_error_returns_none(self):
+        with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+            result = _fetch_manifest_digest("docker.io", "library/node", "22")
+        assert result is None
+
+    def test_missing_digest_header_returns_none(self):
+        responses = [("tok", None), (None, None)]
+        with patch("urllib.request.urlopen", side_effect=self._mock_urlopen(responses)):
+            result = _fetch_manifest_digest("docker.io", "library/node", "22")
+        assert result is None
+
+
 class TestCmdCheck:
-    def _make_state(self, tmp_path):
+    def _make_dirs(self, tmp_path):
         images_dir = tmp_path / "images"
         images_dir.mkdir(parents=True)
         base_dir = tmp_path / "base-images"
         base_dir.mkdir(parents=True)
         return tmp_path, images_dir, base_dir
 
-    def test_check_with_state_files(self, tmp_path):
-        state_dir, images_dir, base_dir = self._make_state(tmp_path)
+    def _base_image_state(self, name="node-22", registry="docker.io",
+                           repository="library/node", tag="22", digest=DIGEST_A):
+        return {
+            "name": name,
+            "registry": registry,
+            "repository": repository,
+            "tag": tag,
+            "currentDigest": digest,
+        }
 
-        (images_dir / "myapp.yaml").write_text(
-            yaml.dump(
-                {
-                    "name": "myapp",
-                    "currentDigest": "sha256:abc",
-                    "lastBuilt": "2025-01-01T00:00:00Z",
-                    "discoveryStatus": "pending",
-                }
-            )
-        )
-        (base_dir / "node-22.yaml").write_text(
-            yaml.dump(
-                {
-                    "name": "node-22",
-                    "currentDigest": "sha256:def",
-                    "lastUpdated": "2025-01-01T00:00:00Z",
-                }
-            )
-        )
+    def _app_image_state(self, name="myapp", registry="ghcr.io",
+                          repository="myorg/myapp", version="1.0.0", digest=DIGEST_A):
+        return {
+            "name": name,
+            "enrollment": {"registry": registry, "repository": repository},
+            "currentVersion": version,
+            "currentDigest": digest,
+        }
 
-        rc = cmd_check(_args(state_dir=str(state_dir)))
+    # ── clean match ─────────────────────────────────────────────────────────
+
+    def test_clean_base_image_returns_0(self, tmp_path):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+            rc = cmd_check(_args(state_dir=str(state_dir)))
         assert rc == 0
 
-    def test_check_empty_state_dir(self, tmp_path):
+    def test_clean_app_image_returns_0(self, tmp_path):
+        state_dir, images_dir, _ = self._make_dirs(tmp_path)
+        (images_dir / "myapp.yaml").write_text(yaml.dump(self._app_image_state()))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+            rc = cmd_check(_args(state_dir=str(state_dir)))
+        assert rc == 0
+
+    # ── drift detected ───────────────────────────────────────────────────────
+
+    def test_drift_base_image_returns_1(self, tmp_path):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(digest=DIGEST_A)))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+            rc = cmd_check(_args(state_dir=str(state_dir)))
+        assert rc == 1
+
+    def test_drift_app_image_returns_1(self, tmp_path):
+        state_dir, images_dir, _ = self._make_dirs(tmp_path)
+        (images_dir / "myapp.yaml").write_text(yaml.dump(self._app_image_state(digest=DIGEST_A)))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+            rc = cmd_check(_args(state_dir=str(state_dir)))
+        assert rc == 1
+
+    def test_drift_table_output(self, tmp_path, capsys):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(digest=DIGEST_A)))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+            cmd_check(_args(state_dir=str(state_dir)))
+        out = capsys.readouterr().out
+        assert "DRIFT" in out
+        assert "node-22" in out
+
+    def test_clean_table_output(self, tmp_path, capsys):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+            cmd_check(_args(state_dir=str(state_dir)))
+        out = capsys.readouterr().out
+        assert "ok" in out
+        assert "node-22" in out
+
+    # ── json output ──────────────────────────────────────────────────────────
+
+    def test_drift_json_output(self, tmp_path, capsys):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(digest=DIGEST_A)))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+            cmd_check(_args(state_dir=str(state_dir), format="json"))
+        data = json.loads(capsys.readouterr().out)
+        assert len(data) == 1
+        assert data[0]["status"] == "drift"
+        assert data[0]["image"] == "node-22"
+
+    def test_clean_json_output(self, tmp_path, capsys):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+            cmd_check(_args(state_dir=str(state_dir), format="json"))
+        data = json.loads(capsys.readouterr().out)
+        assert data[0]["status"] == "ok"
+
+    # ── network error non-fatal ──────────────────────────────────────────────
+
+    def test_registry_error_is_non_fatal(self, tmp_path):
+        """Network failure must not raise — returns 0 (no drift confirmed)."""
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+
+        with patch("app._fetch_manifest_digest", return_value=None):
+            rc = cmd_check(_args(state_dir=str(state_dir)))
+        assert rc == 0
+
+    def test_registry_error_shown_in_output(self, tmp_path, capsys):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+
+        with patch("app._fetch_manifest_digest", return_value=None):
+            cmd_check(_args(state_dir=str(state_dir)))
+        assert "error" in capsys.readouterr().out
+
+    # ── --image scoping ──────────────────────────────────────────────────────
+
+    def test_image_filter_scopes_to_named_image(self, tmp_path):
+        state_dir, _, base_dir = self._make_dirs(tmp_path)
+        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(name="node-22", digest=DIGEST_A)))
+        (base_dir / "alpine.yaml").write_text(yaml.dump(self._base_image_state(name="alpine", digest=DIGEST_A)))
+
+        call_args = []
+        def _mock_fetch(registry, repository, tag, token=None):
+            call_args.append(repository)
+            return DIGEST_A
+
+        with patch("app._fetch_manifest_digest", side_effect=_mock_fetch):
+            rc = cmd_check(_args(state_dir=str(state_dir), image="node-22"))
+
+        assert rc == 0
+        # Only one image was queried
+        assert len(call_args) == 1
+
+    def test_image_filter_not_found_returns_1(self, tmp_path):
+        state_dir, _, _ = self._make_dirs(tmp_path)
+        rc = cmd_check(_args(state_dir=str(state_dir), image="nonexistent"))
+        assert rc == 1
+
+    # ── skipped when no tag ──────────────────────────────────────────────────
+
+    def test_app_image_without_version_is_skipped(self, tmp_path):
+        state_dir, images_dir, _ = self._make_dirs(tmp_path)
+        (images_dir / "myapp.yaml").write_text(yaml.dump({
+            "name": "myapp",
+            "enrollment": {"registry": "ghcr.io", "repository": "myorg/myapp"},
+            "currentVersion": None,
+            "currentDigest": None,
+        }))
+
+        with patch("app._fetch_manifest_digest") as mock_fetch:
+            rc = cmd_check(_args(state_dir=str(state_dir)))
+        mock_fetch.assert_not_called()
+        assert rc == 0
+
+    # ── empty state dir ──────────────────────────────────────────────────────
+
+    def test_empty_state_dir_returns_0(self, tmp_path):
         rc = cmd_check(_args(state_dir=str(tmp_path)))
         assert rc == 0
+
+    # ── parser ───────────────────────────────────────────────────────────────
+
+    def test_parser_check_defaults(self):
+        parser = build_parser()
+        args = parser.parse_args(["images", "check"])
+        assert args.image is None
+        assert args.format == "table"
+
+    def test_parser_check_with_flags(self):
+        parser = build_parser()
+        args = parser.parse_args(["images", "check", "--image", "node-22", "--format", "json"])
+        assert args.image == "node-22"
+        assert args.format == "json"
 
 
 # ---------------------------------------------------------------------------
