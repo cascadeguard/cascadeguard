@@ -2,26 +2,22 @@
 
 Guardian of the container cascade. Event-driven image lifecycle management with Kargo and ArgoCD.
 
-## Quick Start — Scan Any Repository
-
-Run this in any project directory to install CascadeGuard and scan for container artifacts:
+## Quick Start
 
 ```bash
-# macOS / Linux
+# Install (macOS / Linux)
 curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh
 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.ps1 | iex
 ```
 
-This installs CascadeGuard to `~/.cascadeguard` (or `%LOCALAPPDATA%\cascadeguard` on Windows), adds it to your PATH, and runs `cascadeguard scan`. After that, `cascadeguard` is available as a regular command.
+Then in your state repository:
 
 ```bash
-# Scan without installing (temp environment, cleaned up after)
-curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh -s -- --no-install
-
-# Non-interactive JSON output
-curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh -s -- --non-interactive --format json
+cascadeguard images validate     # Validate images.yaml
+cascadeguard images generate     # Generate state files
+cascadeguard ci generate         # Generate CI/CD pipelines
 ```
 
 Requires Python 3.11+.
@@ -57,41 +53,73 @@ CascadeGuard automates the process of monitoring base images, discovering Docker
 
 ## Using CascadeGuard
 
-State repositories use CascadeGuard via Docker — no local Python setup required. Include `Taskfile.shared.yaml` from a tagged release:
-
-```yaml
-# Taskfile.yaml in your state repo
-version: '3'
-includes:
-  shared:
-    taskfile: https://raw.githubusercontent.com/cascadeguard/cascadeguard/v1.0.0/Taskfile.shared.yaml
-    flatten: true
-```
-
-Then run:
+### 1. Install
 
 ```bash
-task generate          # Generate state files from images.yaml
-task synth             # Generate Kargo manifests
-task generate-and-synth  # Both in sequence
-task generate-ci       # Generate GitHub Actions workflow files
-task status            # View generated files
+# macOS / Linux
+curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.sh | sh
+```
+
+### 2. Set up your state repository
+
+Create an `images.yaml` listing the images you want to manage, and a `.cascadeguard.yaml` for repo-level defaults:
+
+```yaml
+# .cascadeguard.yaml
+defaults:
+  registry: ghcr.io/myorg
+  local:
+    dir: images        # folder containing per-image Dockerfiles
+
+ci:
+  platform: github
+```
+
+```yaml
+# images.yaml — managed images inherit registry from .cascadeguard.yaml
+- name: nginx
+  dockerfile: images/nginx/Dockerfile
+  image: nginx
+  tag: stable-alpine-slim
+
+# Upstream-tracked images (CVE monitoring only, no build)
+- name: memcached
+  enabled: false
+  namespace: library
+```
+
+### 3. Validate, generate, and build
+
+```bash
+# Validate images.yaml (applies config defaults before checking)
+cascadeguard images validate
+
+# Enrol a new image
+cascadeguard images enrol --name myapp --registry ghcr.io --repository org/myapp
+
+# Generate state files from images.yaml
+cascadeguard images generate
+
+# Generate CI/CD pipeline files (GitHub Actions)
+cascadeguard ci generate
+
+# Generate CI with explicit platform or dry-run
+cascadeguard ci generate --platform github --dry-run
 ```
 
 See [cascadeguard-exemplar](https://github.com/cascadeguard/cascadeguard-exemplar) for a complete working example.
 
-## Docker Image
+### Config Inheritance
 
-The CascadeGuard Docker image is published to `ghcr.io/cascadeguard/cascadeguard` on each release tag.
+Common fields can be set once in `.cascadeguard.yaml` under `defaults` instead of repeating them on every image:
 
-Mount your state repo at `/workspace`:
+| Key | Description |
+|-----|-------------|
+| `defaults.registry` | Default container registry (e.g. `ghcr.io/cascadeguard`) |
+| `defaults.repository` | Default repository prefix |
+| `defaults.local.dir` | Default folder containing per-image Dockerfiles |
 
-```bash
-docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate
-docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 synth
-docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate-and-synth
-docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate-ci
-```
+Per-image values in `images.yaml` always override the defaults.
 
 ## Development
 
@@ -119,7 +147,7 @@ docker run --rm -v $(pwd)/path/to/state:/workspace cascadeguard:dev generate
 
 ## Generating CI/CD Pipelines
 
-`cascadeguard generate-ci` reads `images.yaml` and emits four GitHub Actions workflow files under `.github/workflows/`:
+`cascadeguard ci generate` reads `images.yaml` and emits four GitHub Actions workflow files under `.github/workflows/`:
 
 | File | Trigger | Purpose |
 |------|---------|---------|
@@ -128,16 +156,12 @@ docker run --rm -v $(pwd)/path/to/state:/workspace cascadeguard:dev generate
 | `scheduled-scan.yaml` | Nightly cron + `workflow_dispatch` | Re-scans all published images; opens a GitHub Issue on new CVEs |
 | `release.yaml` | Tag push (`v*`) | Builds, signs, and pushes all images; creates a GitHub Release with changelog |
 
-### Quick start
-
 ```bash
-# Inside your state repo (e.g. cascadeguard-open-secure-images):
-task generate-ci
-# or directly via Docker:
-docker run --rm -v $(pwd):/workspace ghcr.io/cascadeguard/cascadeguard:v1.0.0 generate-ci
+cascadeguard ci generate
+cascadeguard ci generate --dry-run    # preview without writing
 ```
 
-Commit the generated files. Adding a new image to `images.yaml` and re-running `generate-ci` will automatically include it in every pipeline.
+Commit the generated files. Adding a new image to `images.yaml` and re-running `cascadeguard ci generate` will automatically include it in every pipeline.
 
 ## Image Types
 

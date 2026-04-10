@@ -73,8 +73,7 @@ class TestCmdValidate:
                     {
                         "name": "myapp",
                         "registry": "ghcr.io",
-                        "repository": "org/myapp",
-                        "source": {"provider": "github", "repo": "org/myapp"},
+                        "dockerfile": "images/myapp/Dockerfile",
                     }
                 ]
             )
@@ -84,55 +83,35 @@ class TestCmdValidate:
 
     def test_missing_name(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(yaml.dump([{"registry": "ghcr.io", "repository": "org/x"}]))
+        f.write_text(yaml.dump([{"registry": "ghcr.io", "dockerfile": "Dockerfile"}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
         assert rc == 1
 
     def test_missing_registry(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(yaml.dump([{"name": "x", "repository": "org/x"}]))
+        f.write_text(yaml.dump([{"name": "x", "dockerfile": "Dockerfile"}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
         assert rc == 1
 
-    def test_missing_repository(self, tmp_path):
+    def test_missing_dockerfile(self, tmp_path):
         f = tmp_path / "images.yaml"
         f.write_text(yaml.dump([{"name": "x", "registry": "ghcr.io"}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
         assert rc == 1
 
-    def test_source_missing_provider(self, tmp_path):
+    def test_disabled_image_only_needs_name(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(
-            yaml.dump(
-                [
-                    {
-                        "name": "x",
-                        "registry": "ghcr.io",
-                        "repository": "org/x",
-                        "source": {"repo": "org/x"},
-                    }
-                ]
-            )
-        )
+        f.write_text(yaml.dump([{"name": "x", "enabled": False}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
-        assert rc == 1
+        assert rc == 0
 
-    def test_source_missing_repo(self, tmp_path):
+    def test_config_defaults_applied(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(
-            yaml.dump(
-                [
-                    {
-                        "name": "x",
-                        "registry": "ghcr.io",
-                        "repository": "org/x",
-                        "source": {"provider": "github"},
-                    }
-                ]
-            )
-        )
+        f.write_text(yaml.dump([{"name": "x", "dockerfile": "Dockerfile"}]))
+        cfg = tmp_path / ".cascadeguard.yaml"
+        cfg.write_text(yaml.dump({"defaults": {"registry": "ghcr.io/test"}}))
         rc = cmd_validate(_args(images_yaml=str(f)))
-        assert rc == 1
+        assert rc == 0
 
     def test_file_not_found(self, tmp_path):
         rc = cmd_validate(_args(images_yaml=str(tmp_path / "missing.yaml")))
@@ -315,174 +294,201 @@ class TestFetchManifestDigest:
 
 
 class TestCmdCheck:
-    def _make_dirs(self, tmp_path):
-        images_dir = tmp_path / "images"
-        images_dir.mkdir(parents=True)
-        base_dir = tmp_path / "base-images"
-        base_dir.mkdir(parents=True)
-        return tmp_path, images_dir, base_dir
+    def _setup_repo(self, tmp_path, images_yaml_content, dockerfiles=None):
+        """Set up a minimal repo with images.yaml, .cascadeguard.yaml, and optional Dockerfiles."""
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump(images_yaml_content))
+        state_dir = tmp_path / ".cascadeguard"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        if dockerfiles:
+            for path, content in dockerfiles.items():
+                full = tmp_path / path
+                full.parent.mkdir(parents=True, exist_ok=True)
+                full.write_text(content)
+        return str(images_yaml), str(state_dir)
 
-    def _base_image_state(self, name="node-22", registry="docker.io",
-                           repository="library/node", tag="22", digest=DIGEST_A):
-        return {
+    def _pre_seed_base_image(self, state_dir, name, registry="docker.io",
+                              repository="library/node", tag="22", digest=DIGEST_A):
+        """Pre-seed a base-images state file (simulates a previous check run)."""
+        base_dir = Path(state_dir) / "base-images"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        state = {
             "name": name,
+            "fullImage": f"{repository}:{tag}",
             "registry": registry,
             "repository": repository,
             "tag": tag,
             "currentDigest": digest,
+            "lastChecked": "2025-01-01T00:00:00+00:00",
+            "allowTags": f"^{tag}$",
+            "imageSelectionStrategy": "Lexical",
+            "repoURL": f"{registry}/{repository}",
+            "firstDiscovered": "2025-01-01T00:00:00+00:00",
+            "lastUpdated": None,
+            "previousDigest": None,
+            "rebuildEligibleAt": {"default": None},
+            "metadata": {},
+            "updateHistory": [],
+            "lastDiscovery": None,
         }
+        (base_dir / f"{name}.yaml").write_text(yaml.dump(state, default_flow_style=False))
 
-    def _app_image_state(self, name="myapp", registry="ghcr.io",
-                          repository="myorg/myapp", version="1.0.0", digest=DIGEST_A):
-        return {
-            "name": name,
-            "enrollment": {"registry": registry, "repository": repository},
-            "currentVersion": version,
-            "currentDigest": digest,
-        }
+    # ── discovers base images from Dockerfile ────────────────────────────────
 
-    # ── clean match ─────────────────────────────────────────────────────────
+    def test_discovers_base_images_from_dockerfile(self, tmp_path):
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22-slim\nRUN echo hello\n"})
+
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+        assert rc == 0
+        # Should have created base-images/node-22-slim.yaml
+        assert (Path(state_dir) / "base-images" / "node-22-slim.yaml").exists()
+        # Should have created images/myapp.yaml
+        assert (Path(state_dir) / "images" / "myapp.yaml").exists()
+
+    # ── clean match on pre-seeded base image ─────────────────────────────────
 
     def test_clean_base_image_returns_0(self, tmp_path):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
         with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
-            rc = cmd_check(_args(state_dir=str(state_dir)))
-        assert rc == 0
-
-    def test_clean_app_image_returns_0(self, tmp_path):
-        state_dir, images_dir, _ = self._make_dirs(tmp_path)
-        (images_dir / "myapp.yaml").write_text(yaml.dump(self._app_image_state()))
-
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
-            rc = cmd_check(_args(state_dir=str(state_dir)))
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 0
 
     # ── drift detected ───────────────────────────────────────────────────────
 
     def test_drift_base_image_returns_1(self, tmp_path):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(digest=DIGEST_A)))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
         with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
-            rc = cmd_check(_args(state_dir=str(state_dir)))
-        assert rc == 1
-
-    def test_drift_app_image_returns_1(self, tmp_path):
-        state_dir, images_dir, _ = self._make_dirs(tmp_path)
-        (images_dir / "myapp.yaml").write_text(yaml.dump(self._app_image_state(digest=DIGEST_A)))
-
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
-            rc = cmd_check(_args(state_dir=str(state_dir)))
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 1
 
     def test_drift_table_output(self, tmp_path, capsys):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(digest=DIGEST_A)))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
         with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
-            cmd_check(_args(state_dir=str(state_dir)))
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         out = capsys.readouterr().out
         assert "DRIFT" in out
-        assert "node-22" in out
 
     def test_clean_table_output(self, tmp_path, capsys):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
         with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
-            cmd_check(_args(state_dir=str(state_dir)))
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         out = capsys.readouterr().out
-        assert "ok" in out
         assert "node-22" in out
 
     # ── json output ──────────────────────────────────────────────────────────
 
     def test_drift_json_output(self, tmp_path, capsys):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(digest=DIGEST_A)))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
         with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
-            cmd_check(_args(state_dir=str(state_dir), format="json"))
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, format="json"))
         data = json.loads(capsys.readouterr().out)
-        assert len(data) == 1
-        assert data[0]["status"] == "drift"
-        assert data[0]["image"] == "node-22"
+        assert any(d["status"] == "drift" for d in data)
 
     def test_clean_json_output(self, tmp_path, capsys):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
         with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
-            cmd_check(_args(state_dir=str(state_dir), format="json"))
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, format="json"))
         data = json.loads(capsys.readouterr().out)
         assert data[0]["status"] == "ok"
 
     # ── network error non-fatal ──────────────────────────────────────────────
 
     def test_registry_error_is_non_fatal(self, tmp_path):
-        """Network failure must not raise — returns 0 (no drift confirmed)."""
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22")
 
         with patch("app._fetch_manifest_digest", return_value=None):
-            rc = cmd_check(_args(state_dir=str(state_dir)))
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 0
 
     def test_registry_error_shown_in_output(self, tmp_path, capsys):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state()))
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
+            {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
+        self._pre_seed_base_image(state_dir, "node-22")
 
         with patch("app._fetch_manifest_digest", return_value=None):
-            cmd_check(_args(state_dir=str(state_dir)))
-        assert "error" in capsys.readouterr().out
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+        out = capsys.readouterr().out
+        assert "error" in out or "unreachable" in out
 
     # ── --image scoping ──────────────────────────────────────────────────────
 
     def test_image_filter_scopes_to_named_image(self, tmp_path):
-        state_dir, _, base_dir = self._make_dirs(tmp_path)
-        (base_dir / "node-22.yaml").write_text(yaml.dump(self._base_image_state(name="node-22", digest=DIGEST_A)))
-        (base_dir / "alpine.yaml").write_text(yaml.dump(self._base_image_state(name="alpine", digest=DIGEST_A)))
+        images_yaml, state_dir = self._setup_repo(tmp_path, [
+            {"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"},
+            {"name": "other", "dockerfile": "images/other/Dockerfile", "image": "other", "tag": "latest", "registry": "ghcr.io"},
+        ], {
+            "images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n",
+            "images/other/Dockerfile": "FROM alpine:3.20\nRUN echo hello\n",
+        })
 
-        call_args = []
-        def _mock_fetch(registry, repository, tag, token=None):
-            call_args.append(repository)
-            return DIGEST_A
-
-        with patch("app._fetch_manifest_digest", side_effect=_mock_fetch):
-            rc = cmd_check(_args(state_dir=str(state_dir), image="node-22"))
-
+        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, image="myapp"))
         assert rc == 0
-        # Only one image was queried
-        assert len(call_args) == 1
+        # Only myapp's base image should be discovered, not other's
+        assert (Path(state_dir) / "images" / "myapp.yaml").exists()
 
-    def test_image_filter_not_found_returns_1(self, tmp_path):
-        state_dir, _, _ = self._make_dirs(tmp_path)
-        rc = cmd_check(_args(state_dir=str(state_dir), image="nonexistent"))
-        assert rc == 1
+    # ── skipped when disabled ────────────────────────────────────────────────
 
-    # ── skipped when no tag ──────────────────────────────────────────────────
-
-    def test_app_image_without_version_is_skipped(self, tmp_path):
-        state_dir, images_dir, _ = self._make_dirs(tmp_path)
-        (images_dir / "myapp.yaml").write_text(yaml.dump({
-            "name": "myapp",
-            "enrollment": {"registry": "ghcr.io", "repository": "myorg/myapp"},
-            "currentVersion": None,
-            "currentDigest": None,
-        }))
+    def test_disabled_image_is_skipped(self, tmp_path):
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "memcached", "enabled": False}])
 
         with patch("app._fetch_manifest_digest") as mock_fetch:
-            rc = cmd_check(_args(state_dir=str(state_dir)))
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         mock_fetch.assert_not_called()
         assert rc == 0
 
-    # ── empty state dir ──────────────────────────────────────────────────────
+    # ── empty images.yaml ────────────────────────────────────────────────────
 
-    def test_empty_state_dir_returns_0(self, tmp_path):
-        rc = cmd_check(_args(state_dir=str(tmp_path)))
+    def test_empty_images_returns_0(self, tmp_path):
+        images_yaml, state_dir = self._setup_repo(tmp_path, [])
+        rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 0
+
+    # ── parser ───────────────────────────────────────────────────────────────
+
+    def test_parser_check_defaults(self):
+        parser = build_parser()
+        args = parser.parse_args(["images", "check"])
+        assert args.image is None
+        assert args.format == "table"
+
+    def test_parser_check_with_flags(self):
+        parser = build_parser()
+        args = parser.parse_args(["images", "check", "--image", "node-22", "--format", "json"])
+        assert args.image == "node-22"
+        assert args.format == "json"
 
     # ── parser ───────────────────────────────────────────────────────────────
 

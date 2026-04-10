@@ -509,6 +509,31 @@ def generate_github_actions(images: list, output_dir: Path, dry_run: bool) -> No
     write_workflow(workflows_dir / "release.yaml", release_workflow(images), dry_run)
 
 
+def merge_defaults(images: list, config: dict) -> list:
+    """Apply repo-level defaults from .cascadeguard.yaml to each image.
+
+    Per-image values always take precedence over config defaults.
+    Only these keys are inherited: registry, repository, local.dir.
+    """
+    defaults = config.get("defaults", {})
+    if not defaults:
+        return images
+
+    default_registry = defaults.get("registry")
+    default_repository = defaults.get("repository")
+
+    result = []
+    for img in images:
+        merged = dict(img)
+        if "registry" not in merged and default_registry:
+            merged["registry"] = default_registry
+        if "repository" not in merged and default_repository:
+            merged["repository"] = default_repository
+        result.append(merged)
+
+    return result
+
+
 def generate_ci(
     images_yaml_path: Path,
     output_dir: Path,
@@ -521,7 +546,11 @@ def generate_ci(
         return
 
     config = load_config(output_dir)
+    images = merge_defaults(images, config)
     resolved_platform = resolve_platform(config, platform)
+
+    # Filter to only enabled images for CI generation
+    images = [img for img in images if img.get("enabled", True)]
 
     print(f"Generating CI resources for {len(images)} image(s)…")
 

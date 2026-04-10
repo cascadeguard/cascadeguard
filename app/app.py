@@ -700,6 +700,63 @@ class ArgoCDProvider(Provider):
 # ---------------------------------------------------------------------------
 
 
+def load_config(repo_root: Path) -> dict:
+    """Load .cascadeguard.yaml from repo_root. Returns {} if absent."""
+    config_path = repo_root / ".cascadeguard.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        print(f"Error: malformed .cascadeguard.yaml: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        print("Error: .cascadeguard.yaml root must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    return data
+
+
+def merge_defaults(images: list, config: dict) -> list:
+    """Apply repo-level defaults from .cascadeguard.yaml to each image.
+
+    Per-image values always take precedence over config defaults.
+    Only these keys are inherited: registry, repository, local.dir.
+    Does NOT mutate the input list or its dicts.
+    """
+    defaults = config.get("defaults", {})
+    if not defaults:
+        return [dict(img) for img in images]
+
+    default_registry = defaults.get("registry")
+    default_repository = defaults.get("repository")
+    default_local = defaults.get("local", {})
+    default_local_dir = default_local.get("dir")
+
+    result = []
+    for img in images:
+        merged = dict(img)
+
+        if "registry" not in merged and default_registry:
+            merged["registry"] = default_registry
+
+        if "repository" not in merged and default_repository:
+            merged["repository"] = default_repository
+
+        if default_local_dir:
+            img_local = merged.get("local", {})
+            if "dir" not in img_local:
+                merged_local = dict(img_local)
+                merged_local["dir"] = default_local_dir
+                merged["local"] = merged_local
+
+        result.append(merged)
+
+    return result
+
+
 def cmd_validate(args) -> int:
     """Validate images.yaml structure and required fields."""
     images_yaml = Path(args.images_yaml)
@@ -714,23 +771,27 @@ def cmd_validate(args) -> int:
         print("Error: images.yaml must be a list", file=sys.stderr)
         return 1
 
+    # Load config and merge defaults BEFORE validation
+    repo_root = images_yaml.parent
+    config = load_config(repo_root)
+    resolved_images = merge_defaults(images, config)
+
     errors = []
-    for i, image in enumerate(images):
+    for i, image in enumerate(resolved_images):
         name = image.get("name")
         if not name:
             errors.append(f"Image {i}: missing 'name' field")
             continue
-        if not image.get("registry"):
-            errors.append(f"Image '{name}': missing 'registry' field")
-        if not image.get("repository"):
-            errors.append(f"Image '{name}': missing 'repository' field")
 
-        source = image.get("source", {})
-        if source:
-            if not source.get("repo"):
-                errors.append(f"Image '{name}': source missing 'repo' field")
-            if not source.get("provider"):
-                errors.append(f"Image '{name}': source missing 'provider' field")
+        # Disabled images only need a name
+        if not image.get("enabled", True):
+            continue
+
+        # Enabled images need registry and dockerfile
+        if not image.get("registry"):
+            errors.append(f"Image '{name}': missing 'registry' (set in image or .cascadeguard.yaml defaults)")
+        if not image.get("dockerfile"):
+            errors.append(f"Image '{name}': missing 'dockerfile' field")
 
     if errors:
         print("Validation errors:", file=sys.stderr)
@@ -738,7 +799,7 @@ def cmd_validate(args) -> int:
             print(f"  - {err}", file=sys.stderr)
         return 1
 
-    print(f"Validated {len(images)} images in {images_yaml}")
+    print(f"Validated {len(resolved_images)} images in {images_yaml}")
     return 0
 
 
@@ -853,24 +914,128 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
 
 
 def cmd_check(args) -> int:
-    """Check enrolled images against the live registry for digest drift."""
+    """Unified check: generate state, discover base images, query registries."""
+    from generate_state import (
+        parse_dockerfile_base_images,
+        normalize_base_image_name,
+        clone_repo_if_needed,
+    )
+
+    images_yaml = Path(args.images_yaml)
+    if not images_yaml.exists():
+        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
+        return 1
+
+    with open(images_yaml) as f:
+        images = yaml.safe_load(f) or []
+
+    repo_root = images_yaml.parent
+    config = load_config(repo_root)
+    resolved_images = merge_defaults(images, config)
+
     state_dir = Path(args.state_dir)
     images_dir = state_dir / "images"
     base_images_dir = state_dir / "base-images"
+    cache_dir = state_dir / ".cache"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    base_images_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     image_filter: Optional[str] = getattr(args, "image", None)
     fmt: str = getattr(args, "format", "table")
 
+    # ── Phase 1: Generate image state + discover base images ───────────────
+    all_base_image_refs: Dict[str, str] = {}  # normalized_name -> full image ref
+
+    for image in resolved_images:
+        name = image.get("name")
+        if not name:
+            continue
+        if not image.get("enabled", True):
+            continue
+        if image_filter and name != image_filter:
+            continue
+
+        # Find Dockerfile (local or remote)
+        source = image.get("source", {})
+        dockerfile_rel = image.get("dockerfile") or source.get("dockerfile")
+        base_images = []
+
+        if dockerfile_rel:
+            try:
+                if source.get("repo"):
+                    repo_dir = clone_repo_if_needed(source, dockerfile_rel, cache_dir)
+                    full_path = repo_dir / dockerfile_rel
+                else:
+                    full_path = repo_root / dockerfile_rel
+                    if not full_path.exists():
+                        full_path = state_dir / dockerfile_rel
+
+                if full_path.exists():
+                    discovered = parse_dockerfile_base_images(full_path)
+                    seen = set()
+                    for ref in discovered:
+                        norm = normalize_base_image_name(ref)
+                        if norm not in seen:
+                            base_images.append(norm)
+                            all_base_image_refs[norm] = ref
+                            seen.add(norm)
+                    if base_images:
+                        print(f"  {name}: found {len(base_images)} base image(s): {', '.join(base_images)}", file=sys.stderr)
+                else:
+                    print(f"  {name}: Dockerfile not found at {full_path}", file=sys.stderr)
+            except Exception as e:
+                print(f"  {name}: error reading Dockerfile: {e}", file=sys.stderr)
+
+        # Write/update image state file
+        state_file = images_dir / f"{name}.yaml"
+        existing = None
+        if state_file.exists():
+            with open(state_file) as f:
+                existing = yaml.safe_load(f) or {}
+
+        now = datetime.now(timezone.utc).isoformat()
+        state = {
+            "name": name,
+            "enrolledAt": existing.get("enrolledAt", now) if existing else now,
+            "lastChecked": now,
+            "registry": image.get("registry", ""),
+            "image": image.get("image", name),
+            "tag": str(image.get("tag", "latest")),
+            "dockerfile": dockerfile_rel or "",
+            "baseImages": sorted(base_images),
+            "currentDigest": existing.get("currentDigest") if existing else None,
+        }
+
+        with open(state_file, "w") as f:
+            f.write(f"# Auto-generated by CascadeGuard\n")
+            yaml.dump(state, f, default_flow_style=False, sort_keys=False)
+
+    # ── Phase 2: Write base image state files ──────────────────────────────
+    tool = CascadeGuardTool(repo_root)
+    for norm_name, full_ref in all_base_image_refs.items():
+        state_file = base_images_dir / f"{norm_name}.yaml"
+        if state_file.exists():
+            with open(state_file) as f:
+                existing = yaml.safe_load(f) or {}
+            # Update lastChecked but preserve runtime data
+            existing["lastChecked"] = datetime.now(timezone.utc).isoformat()
+            new_state = existing
+        else:
+            new_state = tool.generate_base_image_state(full_ref)
+        tool.write_base_image_state(new_state, state_file)
+
+    # ── Phase 3: Check registries for digest drift ─────────────────────────
     results: List[Dict] = []
 
-    # ── Base images ────────────────────────────────────────────────────────────
+    # Check base images
     if base_images_dir.exists():
         for state_file in sorted(base_images_dir.glob("*.yaml")):
             with open(state_file) as f:
                 state = yaml.safe_load(f) or {}
             name = state.get("name", state_file.stem)
-            if image_filter and name != image_filter:
-                continue
+            if image_filter:
+                continue  # skip base images when filtering by enrolled image
 
             registry = state.get("registry", "docker.io")
             repository = state.get("repository", "")
@@ -878,73 +1043,49 @@ def cmd_check(args) -> int:
             recorded_digest = state.get("currentDigest") or None
 
             if not repository or not tag:
-                results.append({"image": name, "status": "skipped", "reason": "no registry coordinates"})
+                results.append({"image": f"base:{name}", "status": "skipped", "reason": "no registry coordinates"})
                 continue
 
             live_digest = _fetch_manifest_digest(registry, repository, tag)
             if live_digest is None:
-                results.append({"image": name, "status": "error", "reason": "registry unreachable"})
+                results.append({"image": f"base:{name}", "status": "error", "reason": "registry unreachable"})
             elif recorded_digest is None:
-                results.append({"image": name, "status": "unknown", "reason": "no local digest recorded"})
+                results.append({"image": f"base:{name}", "status": "new", "live": live_digest})
+                # Record the digest
+                state["currentDigest"] = live_digest
+                state["lastUpdated"] = datetime.now(timezone.utc).isoformat()
+                tool.write_base_image_state(state, state_file)
             elif live_digest == recorded_digest:
-                results.append({"image": name, "status": "ok", "recorded": recorded_digest, "live": live_digest})
+                results.append({"image": f"base:{name}", "status": "ok", "digest": recorded_digest[:16]})
             else:
-                results.append({"image": name, "status": "drift", "recorded": recorded_digest, "live": live_digest})
+                results.append({"image": f"base:{name}", "status": "drift", "recorded": recorded_digest[:16], "live": live_digest[:16]})
+                state["previousDigest"] = recorded_digest
+                state["currentDigest"] = live_digest
+                state["lastUpdated"] = datetime.now(timezone.utc).isoformat()
+                tool.write_base_image_state(state, state_file)
 
-    # ── Application images ──────────────────────────────────────────────────────
-    if images_dir.exists():
-        for state_file in sorted(images_dir.glob("*.yaml")):
-            with open(state_file) as f:
-                state = yaml.safe_load(f) or {}
-            name = state.get("name", state_file.stem)
-            if image_filter and name != image_filter:
-                continue
-
-            enrollment = state.get("enrollment") or {}
-            registry = enrollment.get("registry", "ghcr.io")
-            repository = enrollment.get("repository", "")
-            tag = str(state.get("currentVersion", "") or "")
-            recorded_digest = state.get("currentDigest") or None
-
-            if not repository or not tag:
-                results.append({"image": name, "status": "skipped", "reason": "no version/tag recorded yet"})
-                continue
-
-            live_digest = _fetch_manifest_digest(registry, repository, tag)
-            if live_digest is None:
-                results.append({"image": name, "status": "error", "reason": "registry unreachable"})
-            elif recorded_digest is None:
-                results.append({"image": name, "status": "unknown", "reason": "no local digest recorded"})
-            elif live_digest == recorded_digest:
-                results.append({"image": name, "status": "ok", "recorded": recorded_digest, "live": live_digest})
-            else:
-                results.append({"image": name, "status": "drift", "recorded": recorded_digest, "live": live_digest})
-
-    if image_filter and not results:
-        print(f"Error: image '{image_filter}' not found in state dir", file=sys.stderr)
-        return 1
-
+    # ── Output ─────────────────────────────────────────────────────────────
     has_drift = any(r["status"] == "drift" for r in results)
 
     if fmt == "json":
         print(json.dumps(results, indent=2))
     else:
         if not results:
-            print("No enrolled images found.")
+            print("No base images to check (run with Dockerfiles to discover them).")
         else:
             for r in results:
                 status = r["status"]
-                name = r["image"]
+                img = r["image"]
                 if status == "ok":
-                    print(f"  {name}: ok ({r['live']})")
+                    print(f"  ✓ {img} ({r['digest']}…)")
+                elif status == "new":
+                    print(f"  ● {img}: recorded digest ({r['live'][:16]}…)")
                 elif status == "drift":
-                    print(f"  {name}: DRIFT recorded={r['recorded']} live={r['live']}")
+                    print(f"  ✗ {img}: DRIFT {r['recorded']}… → {r['live']}…")
                 elif status == "error":
-                    print(f"  {name}: error ({r['reason']})")
+                    print(f"  ? {img}: {r['reason']}")
                 elif status == "skipped":
-                    print(f"  {name}: skipped ({r['reason']})")
-                elif status == "unknown":
-                    print(f"  {name}: unknown ({r['reason']})")
+                    print(f"  - {img}: skipped ({r['reason']})")
 
     return 1 if has_drift else 0
 
@@ -1615,6 +1756,69 @@ def cmd_images_check_upstream(args) -> int:
     return 1 if has_new else 0
 
 
+def cmd_images_generate(args) -> int:
+    """Generate state files from images.yaml."""
+    from generate_state import (
+        load_images_yaml,
+        generate_state_for_image,
+        _generate_build_workflow,
+    )
+    from generate_state import load_config as gs_load_config
+
+    images_yaml = Path(args.images_yaml)
+    output_dir = Path(args.output_dir)
+
+    if not images_yaml.exists():
+        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
+        return 1
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else output_dir / ".cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    images = load_images_yaml(images_yaml)
+    config = load_config(images_yaml.parent)
+    resolved_images = merge_defaults(images, config)
+    gs_config = gs_load_config(output_dir)
+
+    print(f"Found {len(resolved_images)} images in {images_yaml}")
+
+    success = 0
+    workflows = 0
+    for image in resolved_images:
+        if generate_state_for_image(image, output_dir, cache_dir):
+            success += 1
+        if _generate_build_workflow(image, output_dir, gs_config):
+            workflows += 1
+
+    print(f"\nGenerated state for {success}/{len(resolved_images)} images, {workflows} workflows")
+    return 0
+
+
+def cmd_ci_generate(args) -> int:
+    """Generate CI pipeline files from images.yaml."""
+    from generate_ci import generate_ci
+
+    images_yaml = Path(args.images_yaml)
+    output_dir = Path(args.output_dir)
+
+    if not images_yaml.exists():
+        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
+        return 1
+
+    generate_ci(
+        images_yaml_path=images_yaml,
+        output_dir=output_dir,
+        dry_run=args.dry_run,
+        platform=args.platform,
+    )
+    return 0
+
+
+def cmd_ci(args) -> int:
+    """Dispatch 'ci' subcommands."""
+    return {"generate": cmd_ci_generate}[args.ci_command](args)
+
+
 def cmd_images(args) -> int:
     """Dispatch 'images' subcommands."""
     return {
@@ -1623,6 +1827,7 @@ def cmd_images(args) -> int:
         "check":          cmd_check,
         "status":         cmd_status,
         "check-upstream": cmd_images_check_upstream,
+        "generate":       cmd_images_generate,
     }[args.images_command](args)
 
 
@@ -1720,6 +1925,7 @@ Commands:
   pipeline    CI/CD orchestration
   vuln        Vulnerability management
   actions     GitHub Actions utilities
+  ci          CI/CD pipeline generation
 """,
     )
 
@@ -1737,8 +1943,8 @@ Commands:
     )
     images.add_argument(
         "--state-dir",
-        default="state",
-        help="Path to state directory (default: state)",
+        default=".cascadeguard",
+        help="Path to state directory (default: .cascadeguard)",
     )
     images_sub = images.add_subparsers(dest="images_command", metavar="subcommand")
     images_sub.required = True
@@ -1805,6 +2011,21 @@ Commands:
         choices=["json", "table"],
         default="table",
         help="Output format: table (default) or json",
+    )
+
+    # images generate
+    images_generate = images_sub.add_parser(
+        "generate", help="Generate state files from images.yaml"
+    )
+    images_generate.add_argument(
+        "--output-dir",
+        default=".cascadeguard",
+        help="Output directory for state files (default: .cascadeguard)",
+    )
+    images_generate.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Cache directory for cloned repos",
     )
 
     # ---------------------------------------------------------------------------
@@ -1992,6 +2213,37 @@ Commands:
         help="Overwrite existing policy file",
     )
 
+    # ---------------------------------------------------------------------------
+    # ci — CI/CD pipeline generation
+    # ---------------------------------------------------------------------------
+    ci = sub.add_parser("ci", help="CI/CD pipeline generation")
+    ci.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
+    )
+    ci_sub = ci.add_subparsers(dest="ci_command", metavar="subcommand")
+    ci_sub.required = True
+
+    ci_generate = ci_sub.add_parser(
+        "generate", help="Generate CI pipeline files from images.yaml"
+    )
+    ci_generate.add_argument(
+        "--output-dir",
+        default=".",
+        help="Output directory (default: current directory)",
+    )
+    ci_generate.add_argument(
+        "--platform",
+        default=None,
+        help="CI platform (github). Overrides .cascadeguard.yaml",
+    )
+    ci_generate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview without writing files",
+    )
+
     # scan
     scan = sub.add_parser("scan", help="Discover and analyse container artifacts in a repository")
     scan.add_argument(
@@ -2039,6 +2291,7 @@ def main() -> int:
         "pipeline": cmd_pipeline_dispatcher,
         "vuln":     cmd_vuln,
         "actions":  cmd_actions,
+        "ci":       cmd_ci,
         "scan":     cmd_scan,
     }
 
