@@ -359,34 +359,17 @@ def generate_state_for_image(image: dict, output_dir: Path, cache_dir: Path) -> 
         print(f"Skipping image without name: {image}", file=sys.stderr)
         return False
 
-    # Determine if this is a base image or application image
-    source = image.get("source", {})
-    if not source:
-        enrollment = image.get("enrollment", {})
-        source = enrollment.get("source", {})
+    # Skip disabled images
+    if not image.get("enabled", True):
+        print(f"  Skipping disabled image: {name}")
+        return False
 
-    is_base_image = not source  # Base images don't have source
-
-    # Determine state directory
-    if is_base_image:
-        state_dir = output_dir / "base-images"
-    else:
-        state_dir = output_dir / "images"
+    # All enrolled images go to images/ — base-images/ is only for
+    # upstream images discovered from Dockerfile FROM statements.
+    state_dir = output_dir / "images"
 
     state_dir.mkdir(parents=True, exist_ok=True)
     state_file = state_dir / f"{name}.yaml"
-
-    # ── Base images: skip if file already exists (never overwrite) ──
-    if is_base_image:
-        if state_file.exists():
-            print(f"  Skipping existing base image state: {state_file}")
-        else:
-            with open(state_file, "w") as f:
-                yaml.dump(image, f, default_flow_style=False)
-            print(f"✓ Generated state for base image: {name}")
-        return True
-
-    # ── Application images ──
 
     # Load existing state (if any) so we can preserve timestamps
     existing = None
@@ -395,14 +378,24 @@ def generate_state_for_image(image: dict, output_dir: Path, cache_dir: Path) -> 
             existing = yaml.safe_load(f)
 
     # Analyze Dockerfile to discover base images
-    dockerfile_path = source.get("dockerfile")
+    # Look for dockerfile at top level first, then in source block
+    source = image.get("source", {})
+    dockerfile_path = image.get("dockerfile") or source.get("dockerfile")
     base_images = []
     discovery_failed = False
 
     if dockerfile_path:
         try:
-            repo_dir = clone_repo_if_needed(source, dockerfile_path, cache_dir)
-            full_dockerfile_path = repo_dir / dockerfile_path
+            if source.get("repo"):
+                # Remote source — clone and fetch Dockerfile
+                repo_dir = clone_repo_if_needed(source, dockerfile_path, cache_dir)
+                full_dockerfile_path = repo_dir / dockerfile_path
+            else:
+                # Local Dockerfile — resolve relative to images.yaml parent
+                full_dockerfile_path = output_dir.parent / dockerfile_path
+                if not full_dockerfile_path.exists():
+                    # Try relative to output_dir itself
+                    full_dockerfile_path = output_dir / dockerfile_path
 
             if full_dockerfile_path.exists():
                 discovered = parse_dockerfile_base_images(full_dockerfile_path)

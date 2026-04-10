@@ -73,8 +73,7 @@ class TestCmdValidate:
                     {
                         "name": "myapp",
                         "registry": "ghcr.io",
-                        "repository": "org/myapp",
-                        "source": {"provider": "github", "repo": "org/myapp"},
+                        "dockerfile": "images/myapp/Dockerfile",
                     }
                 ]
             )
@@ -84,55 +83,35 @@ class TestCmdValidate:
 
     def test_missing_name(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(yaml.dump([{"registry": "ghcr.io", "repository": "org/x"}]))
+        f.write_text(yaml.dump([{"registry": "ghcr.io", "dockerfile": "Dockerfile"}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
         assert rc == 1
 
     def test_missing_registry(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(yaml.dump([{"name": "x", "repository": "org/x"}]))
+        f.write_text(yaml.dump([{"name": "x", "dockerfile": "Dockerfile"}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
         assert rc == 1
 
-    def test_missing_repository(self, tmp_path):
+    def test_missing_dockerfile(self, tmp_path):
         f = tmp_path / "images.yaml"
         f.write_text(yaml.dump([{"name": "x", "registry": "ghcr.io"}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
         assert rc == 1
 
-    def test_source_missing_provider(self, tmp_path):
+    def test_disabled_image_only_needs_name(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(
-            yaml.dump(
-                [
-                    {
-                        "name": "x",
-                        "registry": "ghcr.io",
-                        "repository": "org/x",
-                        "source": {"repo": "org/x"},
-                    }
-                ]
-            )
-        )
+        f.write_text(yaml.dump([{"name": "x", "enabled": False}]))
         rc = cmd_validate(_args(images_yaml=str(f)))
-        assert rc == 1
+        assert rc == 0
 
-    def test_source_missing_repo(self, tmp_path):
+    def test_config_defaults_applied(self, tmp_path):
         f = tmp_path / "images.yaml"
-        f.write_text(
-            yaml.dump(
-                [
-                    {
-                        "name": "x",
-                        "registry": "ghcr.io",
-                        "repository": "org/x",
-                        "source": {"provider": "github"},
-                    }
-                ]
-            )
-        )
+        f.write_text(yaml.dump([{"name": "x", "dockerfile": "Dockerfile"}]))
+        cfg = tmp_path / ".cascadeguard.yaml"
+        cfg.write_text(yaml.dump({"defaults": {"registry": "ghcr.io/test"}}))
         rc = cmd_validate(_args(images_yaml=str(f)))
-        assert rc == 1
+        assert rc == 0
 
     def test_file_not_found(self, tmp_path):
         rc = cmd_validate(_args(images_yaml=str(tmp_path / "missing.yaml")))

@@ -700,6 +700,63 @@ class ArgoCDProvider(Provider):
 # ---------------------------------------------------------------------------
 
 
+def load_config(repo_root: Path) -> dict:
+    """Load .cascadeguard.yaml from repo_root. Returns {} if absent."""
+    config_path = repo_root / ".cascadeguard.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        print(f"Error: malformed .cascadeguard.yaml: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        print("Error: .cascadeguard.yaml root must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    return data
+
+
+def merge_defaults(images: list, config: dict) -> list:
+    """Apply repo-level defaults from .cascadeguard.yaml to each image.
+
+    Per-image values always take precedence over config defaults.
+    Only these keys are inherited: registry, repository, local.dir.
+    Does NOT mutate the input list or its dicts.
+    """
+    defaults = config.get("defaults", {})
+    if not defaults:
+        return [dict(img) for img in images]
+
+    default_registry = defaults.get("registry")
+    default_repository = defaults.get("repository")
+    default_local = defaults.get("local", {})
+    default_local_dir = default_local.get("dir")
+
+    result = []
+    for img in images:
+        merged = dict(img)
+
+        if "registry" not in merged and default_registry:
+            merged["registry"] = default_registry
+
+        if "repository" not in merged and default_repository:
+            merged["repository"] = default_repository
+
+        if default_local_dir:
+            img_local = merged.get("local", {})
+            if "dir" not in img_local:
+                merged_local = dict(img_local)
+                merged_local["dir"] = default_local_dir
+                merged["local"] = merged_local
+
+        result.append(merged)
+
+    return result
+
+
 def cmd_validate(args) -> int:
     """Validate images.yaml structure and required fields."""
     images_yaml = Path(args.images_yaml)
@@ -714,23 +771,27 @@ def cmd_validate(args) -> int:
         print("Error: images.yaml must be a list", file=sys.stderr)
         return 1
 
+    # Load config and merge defaults BEFORE validation
+    repo_root = images_yaml.parent
+    config = load_config(repo_root)
+    resolved_images = merge_defaults(images, config)
+
     errors = []
-    for i, image in enumerate(images):
+    for i, image in enumerate(resolved_images):
         name = image.get("name")
         if not name:
             errors.append(f"Image {i}: missing 'name' field")
             continue
-        if not image.get("registry"):
-            errors.append(f"Image '{name}': missing 'registry' field")
-        if not image.get("repository"):
-            errors.append(f"Image '{name}': missing 'repository' field")
 
-        source = image.get("source", {})
-        if source:
-            if not source.get("repo"):
-                errors.append(f"Image '{name}': source missing 'repo' field")
-            if not source.get("provider"):
-                errors.append(f"Image '{name}': source missing 'provider' field")
+        # Disabled images only need a name
+        if not image.get("enabled", True):
+            continue
+
+        # Enabled images need registry and dockerfile
+        if not image.get("registry"):
+            errors.append(f"Image '{name}': missing 'registry' (set in image or .cascadeguard.yaml defaults)")
+        if not image.get("dockerfile"):
+            errors.append(f"Image '{name}': missing 'dockerfile' field")
 
     if errors:
         print("Validation errors:", file=sys.stderr)
@@ -738,7 +799,7 @@ def cmd_validate(args) -> int:
             print(f"  - {err}", file=sys.stderr)
         return 1
 
-    print(f"Validated {len(images)} images in {images_yaml}")
+    print(f"Validated {len(resolved_images)} images in {images_yaml}")
     return 0
 
 
@@ -1615,6 +1676,69 @@ def cmd_images_check_upstream(args) -> int:
     return 1 if has_new else 0
 
 
+def cmd_images_generate(args) -> int:
+    """Generate state files from images.yaml."""
+    from generate_state import (
+        load_images_yaml,
+        generate_state_for_image,
+        _generate_build_workflow,
+    )
+    from generate_state import load_config as gs_load_config
+
+    images_yaml = Path(args.images_yaml)
+    output_dir = Path(args.output_dir)
+
+    if not images_yaml.exists():
+        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
+        return 1
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else output_dir / ".cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    images = load_images_yaml(images_yaml)
+    config = load_config(images_yaml.parent)
+    resolved_images = merge_defaults(images, config)
+    gs_config = gs_load_config(output_dir)
+
+    print(f"Found {len(resolved_images)} images in {images_yaml}")
+
+    success = 0
+    workflows = 0
+    for image in resolved_images:
+        if generate_state_for_image(image, output_dir, cache_dir):
+            success += 1
+        if _generate_build_workflow(image, output_dir, gs_config):
+            workflows += 1
+
+    print(f"\nGenerated state for {success}/{len(resolved_images)} images, {workflows} workflows")
+    return 0
+
+
+def cmd_ci_generate(args) -> int:
+    """Generate CI pipeline files from images.yaml."""
+    from generate_ci import generate_ci
+
+    images_yaml = Path(args.images_yaml)
+    output_dir = Path(args.output_dir)
+
+    if not images_yaml.exists():
+        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
+        return 1
+
+    generate_ci(
+        images_yaml_path=images_yaml,
+        output_dir=output_dir,
+        dry_run=args.dry_run,
+        platform=args.platform,
+    )
+    return 0
+
+
+def cmd_ci(args) -> int:
+    """Dispatch 'ci' subcommands."""
+    return {"generate": cmd_ci_generate}[args.ci_command](args)
+
+
 def cmd_images(args) -> int:
     """Dispatch 'images' subcommands."""
     return {
@@ -1623,6 +1747,7 @@ def cmd_images(args) -> int:
         "check":          cmd_check,
         "status":         cmd_status,
         "check-upstream": cmd_images_check_upstream,
+        "generate":       cmd_images_generate,
     }[args.images_command](args)
 
 
@@ -1720,6 +1845,7 @@ Commands:
   pipeline    CI/CD orchestration
   vuln        Vulnerability management
   actions     GitHub Actions utilities
+  ci          CI/CD pipeline generation
 """,
     )
 
@@ -1737,8 +1863,8 @@ Commands:
     )
     images.add_argument(
         "--state-dir",
-        default="state",
-        help="Path to state directory (default: state)",
+        default=".cascadeguard",
+        help="Path to state directory (default: .cascadeguard)",
     )
     images_sub = images.add_subparsers(dest="images_command", metavar="subcommand")
     images_sub.required = True
@@ -1805,6 +1931,21 @@ Commands:
         choices=["json", "table"],
         default="table",
         help="Output format: table (default) or json",
+    )
+
+    # images generate
+    images_generate = images_sub.add_parser(
+        "generate", help="Generate state files from images.yaml"
+    )
+    images_generate.add_argument(
+        "--output-dir",
+        default=".cascadeguard",
+        help="Output directory for state files (default: .cascadeguard)",
+    )
+    images_generate.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Cache directory for cloned repos",
     )
 
     # ---------------------------------------------------------------------------
@@ -1992,6 +2133,37 @@ Commands:
         help="Overwrite existing policy file",
     )
 
+    # ---------------------------------------------------------------------------
+    # ci — CI/CD pipeline generation
+    # ---------------------------------------------------------------------------
+    ci = sub.add_parser("ci", help="CI/CD pipeline generation")
+    ci.add_argument(
+        "--images-yaml",
+        default="images.yaml",
+        help="Path to images.yaml (default: images.yaml)",
+    )
+    ci_sub = ci.add_subparsers(dest="ci_command", metavar="subcommand")
+    ci_sub.required = True
+
+    ci_generate = ci_sub.add_parser(
+        "generate", help="Generate CI pipeline files from images.yaml"
+    )
+    ci_generate.add_argument(
+        "--output-dir",
+        default=".",
+        help="Output directory (default: current directory)",
+    )
+    ci_generate.add_argument(
+        "--platform",
+        default=None,
+        help="CI platform (github). Overrides .cascadeguard.yaml",
+    )
+    ci_generate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview without writing files",
+    )
+
     # scan
     scan = sub.add_parser("scan", help="Discover and analyse container artifacts in a repository")
     scan.add_argument(
@@ -2039,6 +2211,7 @@ def main() -> int:
         "pipeline": cmd_pipeline_dispatcher,
         "vuln":     cmd_vuln,
         "actions":  cmd_actions,
+        "ci":       cmd_ci,
         "scan":     cmd_scan,
     }
 
