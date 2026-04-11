@@ -98,9 +98,10 @@ class TestGenerateStateCLI:
         images_dir = workspace['output_dir'] / "images"
         assert (images_dir / "backstage.yaml").exists(), "backstage state file not created"
 
-        # Verify base image state files were created for images.yaml entries without source
-        base_dir = workspace['output_dir'] / "base-images"
-        assert (base_dir / "postgres.yaml").exists(), "postgres state file not created"
+        # Since PR#78, all enrolled images (including registry-tracked ones without
+        # a dockerfile) go to images/. The base-images/ dir is now reserved exclusively
+        # for images discovered from Dockerfile FROM statements during check runs.
+        assert (images_dir / "postgres.yaml").exists(), "postgres state file not created"
 
         # Discovered base images from Dockerfile parsing are referenced by name
         # in the app image's baseImages field, not as separate state files
@@ -112,8 +113,8 @@ class TestGenerateStateCLI:
         assert "node-22-bookworm-slim" in content
         assert "CascadeGuard" in content
 
-        # Verify postgres (external, no source) state content
-        with open(base_dir / "postgres.yaml") as f:
+        # Verify postgres (external, no dockerfile) state content
+        with open(images_dir / "postgres.yaml") as f:
             data = yaml.safe_load(f)
         assert data['name'] == 'postgres'
 
