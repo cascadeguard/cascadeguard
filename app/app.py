@@ -7,7 +7,6 @@ Commands:
   images enrol          Enrol a new image in images.yaml
   images check          Check image and base image states
   images status         Show status of all images
-  images check-upstream Query Docker Hub for new upstream tags across enrolled images
   pipeline run          Run full pipeline (validate -> check -> build -> deploy -> test)
   pipeline build        Trigger a build via GitHub Actions
   pipeline deploy       Deploy via ArgoCD
@@ -22,7 +21,10 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import yaml
 import urllib.request
 import urllib.error
@@ -913,6 +915,47 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
         return None
 
 
+# ---------------------------------------------------------------------------
+# Docker Hub upstream-tag helpers (used by cmd_check Phase 4)
+# ---------------------------------------------------------------------------
+
+_DOCKER_HUB_TAGS_URL = (
+    "https://hub.docker.com/v2/repositories/{namespace}/{image}"
+    "/tags?page_size=100&ordering=last_updated"
+)
+
+
+def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:
+    """Fetch all tags for a Docker Hub image, paginating up to 10 pages."""
+    url: Optional[str] = _DOCKER_HUB_TAGS_URL.format(namespace=namespace, image=image)
+    tags: List[str] = []
+    page = 0
+    try:
+        while url and page < 10:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            tags.extend(t["name"] for t in data.get("results", []))
+            url = data.get("next") or ""
+            page += 1
+    except Exception as exc:
+        logger.warning(f"Could not fetch tags for {namespace}/{image}: {exc}")
+    return tags
+
+
+def _is_stable_tag(tag: str) -> bool:
+    """Return True if *tag* looks like a stable release (not RC/nightly/etc.)."""
+    skip = {"latest", "edge", "nightly", "testing"}
+    if tag in skip:
+        return False
+    for suffix in ("-rc", "-alpha", "-beta", "-dev", "-test", ".rc", "-SNAPSHOT"):
+        if suffix in tag.lower():
+            return False
+    if tag.startswith("sha256:") or len(tag) == 64:
+        return False
+    return True
+
+
 def cmd_check(args) -> int:
     """Unified check: generate state, discover base images, query registries."""
     from generate_state import (
@@ -1064,8 +1107,40 @@ def cmd_check(args) -> int:
                 state["lastUpdated"] = datetime.now(timezone.utc).isoformat()
                 tool.write_base_image_state(state, state_file)
 
+    # ── Phase 4: Check upstream tags (absorbed from check-upstream) ────────
+    for image in resolved_images:
+        name = image.get("name")
+        if not name or not image.get("enabled", True):
+            continue
+        if image_filter and name != image_filter:
+            continue
+
+        img_name = image.get("image", name)
+        namespace = image.get("namespace", "library")
+        current_tags: Set[str] = set(image.get("latest_stable_tags", []))
+
+        upstream_tags = _get_dockerhub_tags(namespace, img_name)
+        stable_upstream = {t for t in upstream_tags if _is_stable_tag(t)}
+
+        new_tags = stable_upstream - current_tags
+        surfaced = []
+        for t in new_tags:
+            base = t.split("-")[0].split(".")[0]
+            if not current_tags or any(
+                c.split("-")[0].split(".")[0] == base for c in current_tags
+            ):
+                surfaced.append(t)
+
+        if surfaced:
+            results.append({
+                "image": name,
+                "status": "new-tags",
+                "new_tags": sorted(surfaced),
+            })
+
     # ── Output ─────────────────────────────────────────────────────────────
     has_drift = any(r["status"] == "drift" for r in results)
+    has_new_tags = any(r["status"] == "new-tags" for r in results)
 
     if fmt == "json":
         print(json.dumps(results, indent=2))
@@ -1082,12 +1157,14 @@ def cmd_check(args) -> int:
                     print(f"  ● {img}: recorded digest ({r['live'][:16]}…)")
                 elif status == "drift":
                     print(f"  ✗ {img}: DRIFT {r['recorded']}… → {r['live']}…")
+                elif status == "new-tags":
+                    print(f"  ↑ {img}: new upstream tags: {', '.join(r.get('new_tags', []))}")
                 elif status == "error":
                     print(f"  ? {img}: {r['reason']}")
                 elif status == "skipped":
                     print(f"  - {img}: skipped ({r['reason']})")
 
-    return 1 if has_drift else 0
+    return 1 if (has_drift or has_new_tags) else 0
 
 
 def cmd_build(args) -> int:
@@ -1665,158 +1742,10 @@ def cmd_actions(args) -> int:
     }[args.actions_command](args)
 
 
-def cmd_images_check_upstream(args) -> int:
-    """Query Docker Hub for new upstream tags across enrolled images."""
-    DOCKER_HUB_TAGS_URL = (
-        "https://hub.docker.com/v2/repositories/{namespace}/{image}"
-        "/tags?page_size=100&ordering=last_updated"
-    )
-
-    def get_dockerhub_tags(namespace: str, image: str) -> List[str]:
-        url = DOCKER_HUB_TAGS_URL.format(namespace=namespace, image=image)
-        tags: List[str] = []
-        page = 0
-        try:
-            while url and page < 10:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read())
-                tags.extend(t["name"] for t in data.get("results", []))
-                url = data.get("next") or ""
-                page += 1
-        except Exception as exc:
-            logger.warning(f"Could not fetch tags for {namespace}/{image}: {exc}")
-        return tags
-
-    def is_stable_tag(tag: str) -> bool:
-        skip = {"latest", "edge", "nightly", "testing"}
-        if tag in skip:
-            return False
-        for suffix in ("-rc", "-alpha", "-beta", "-dev", "-test", ".rc", "-SNAPSHOT"):
-            if suffix in tag.lower():
-                return False
-        if tag.startswith("sha256:") or len(tag) == 64:
-            return False
-        return True
-
-    images_yaml = Path(args.images_yaml)
-    if not images_yaml.exists():
-        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
-        return 1
-
-    with open(images_yaml) as f:
-        all_images = yaml.safe_load(f) or []
-
-    if not isinstance(all_images, list):
-        print("Error: images.yaml must be a list", file=sys.stderr)
-        return 1
-
-    if args.image:
-        images_to_check = [img for img in all_images if img.get("name") == args.image]
-        if not images_to_check:
-            print(f"Error: image '{args.image}' not found in images.yaml", file=sys.stderr)
-            return 1
-    else:
-        images_to_check = [img for img in all_images if img.get("enabled", True)]
-
-    findings: List[Dict] = []
-
-    for img in images_to_check:
-        name = img["image"]
-        namespace = img.get("namespace", "library")
-        current_tags: Set[str] = set(img.get("latest_stable_tags", []))
-
-        logger.info(f"Checking {name} (namespace={namespace})")
-        upstream_tags = get_dockerhub_tags(namespace, name)
-        stable_upstream = {t for t in upstream_tags if is_stable_tag(t)}
-
-        new_tags = stable_upstream - current_tags
-        surfaced = []
-        for t in new_tags:
-            base = t.split("-")[0].split(".")[0]
-            if not current_tags or any(
-                c.split("-")[0].split(".")[0] == base for c in current_tags
-            ):
-                surfaced.append(t)
-
-        if surfaced:
-            findings.append({"image": name, "new_tags": sorted(surfaced)})
-
-    has_new = len(findings) > 0
-
-    if args.format == "json":
-        print(json.dumps(findings, indent=2))
-    else:
-        if not findings:
-            print("No new upstream tags detected.")
-        else:
-            for entry in findings:
-                print(f"{entry['image']}: {', '.join(entry['new_tags'])}")
-
-    return 1 if has_new else 0
 
 
-def cmd_images_generate(args) -> int:
-    """Generate state files from images.yaml."""
-    from generate_state import (
-        load_images_yaml,
-        generate_state_for_image,
-        _generate_build_workflow,
-    )
-    from generate_state import load_config as gs_load_config
-
-    images_yaml = Path(args.images_yaml)
-    output_dir = Path(args.output_dir)
-
-    if not images_yaml.exists():
-        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
-        return 1
-
-    cache_dir = Path(args.cache_dir) if args.cache_dir else output_dir / ".cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    images = load_images_yaml(images_yaml)
-    config = load_config(images_yaml.parent)
-    resolved_images = merge_defaults(images, config)
-    gs_config = gs_load_config(output_dir)
-
-    print(f"Found {len(resolved_images)} images in {images_yaml}")
-
-    success = 0
-    workflows = 0
-    for image in resolved_images:
-        if generate_state_for_image(image, output_dir, cache_dir):
-            success += 1
-        if _generate_build_workflow(image, output_dir, gs_config):
-            workflows += 1
-
-    print(f"\nGenerated state for {success}/{len(resolved_images)} images, {workflows} workflows")
-    return 0
 
 
-def cmd_ci_generate(args) -> int:
-    """Generate CI pipeline files from images.yaml."""
-    from generate_ci import generate_ci
-
-    images_yaml = Path(args.images_yaml)
-    output_dir = Path(args.output_dir)
-
-    if not images_yaml.exists():
-        print(f"Error: images.yaml not found: {images_yaml}", file=sys.stderr)
-        return 1
-
-    generate_ci(
-        images_yaml_path=images_yaml,
-        output_dir=output_dir,
-        dry_run=args.dry_run,
-        platform=args.platform,
-    )
-    return 0
-
-
-def cmd_ci(args) -> int:
-    """Dispatch 'ci' subcommands."""
-    return {"generate": cmd_ci_generate}[args.ci_command](args)
 
 
 def cmd_images(args) -> int:
@@ -1826,8 +1755,7 @@ def cmd_images(args) -> int:
         "enrol":          cmd_enrol,
         "check":          cmd_check,
         "status":         cmd_status,
-        "check-upstream": cmd_images_check_upstream,
-        "generate":       cmd_images_generate,
+        "init":           cmd_init,
     }[args.images_command](args)
 
 
@@ -1911,6 +1839,65 @@ def cmd_status(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Init command
+# ---------------------------------------------------------------------------
+
+SEED_REPO_URL = os.environ.get(
+    "CASCADEGUARD_SEED_REPO",
+    "https://github.com/cascadeguard/cascadeguard-seed.git",
+)
+
+
+def cmd_init(args) -> int:
+    """Scaffold current directory from cascadeguard-seed."""
+    target = Path(args.target_dir).resolve()
+
+    tmp = tempfile.mkdtemp()
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", "main", SEED_REPO_URL, tmp + "/seed"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"Error: failed to clone seed repo: {result.stderr.strip()}", file=sys.stderr)
+            return 1
+
+        seed_dir = Path(tmp) / "seed"
+
+        skipped, copied = 0, 0
+        for root, dirs, files in os.walk(seed_dir):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for f in files:
+                src = Path(root) / f
+                rel = src.relative_to(seed_dir)
+                dest = target / rel
+                if dest.exists():
+                    print(f"  skip (exists): {rel}", file=sys.stderr)
+                    skipped += 1
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                copied += 1
+
+        # Ensure .gitignore has cache entry
+        gitignore = target / ".gitignore"
+        cache_entry = ".cascadeguard/.cache/"
+        if gitignore.exists():
+            content = gitignore.read_text()
+            if cache_entry not in content:
+                with open(gitignore, "a") as gf:
+                    gf.write(f"\n{cache_entry}\n")
+        else:
+            gitignore.write_text(f"{cache_entry}\n")
+
+        print(f"Initialised: {copied} files copied, {skipped} skipped (already exist)")
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -1925,7 +1912,6 @@ Commands:
   pipeline    CI/CD orchestration
   vuln        Vulnerability management
   actions     GitHub Actions utilities
-  ci          CI/CD pipeline generation
 """,
     )
 
@@ -1996,36 +1982,14 @@ Commands:
     # images status
     images_sub.add_parser("status", help="Show status of all images")
 
-    # images check-upstream
-    images_check_upstream = images_sub.add_parser(
-        "check-upstream",
-        help="Query Docker Hub for new upstream tags across enrolled images",
+    # images init
+    images_init = images_sub.add_parser(
+        "init", help="Scaffold a new state repository from cascadeguard-seed"
     )
-    images_check_upstream.add_argument(
-        "--image",
-        default=None,
-        help="Scope check to a single image name (as listed in images.yaml)",
-    )
-    images_check_upstream.add_argument(
-        "--format",
-        choices=["json", "table"],
-        default="table",
-        help="Output format: table (default) or json",
-    )
-
-    # images generate
-    images_generate = images_sub.add_parser(
-        "generate", help="Generate state files from images.yaml"
-    )
-    images_generate.add_argument(
-        "--output-dir",
-        default=".cascadeguard",
-        help="Output directory for state files (default: .cascadeguard)",
-    )
-    images_generate.add_argument(
-        "--cache-dir",
-        default=None,
-        help="Cache directory for cloned repos",
+    images_init.add_argument(
+        "--target-dir",
+        default=".",
+        help="Target directory (default: current directory)",
     )
 
     # ---------------------------------------------------------------------------
@@ -2213,37 +2177,6 @@ Commands:
         help="Overwrite existing policy file",
     )
 
-    # ---------------------------------------------------------------------------
-    # ci — CI/CD pipeline generation
-    # ---------------------------------------------------------------------------
-    ci = sub.add_parser("ci", help="CI/CD pipeline generation")
-    ci.add_argument(
-        "--images-yaml",
-        default="images.yaml",
-        help="Path to images.yaml (default: images.yaml)",
-    )
-    ci_sub = ci.add_subparsers(dest="ci_command", metavar="subcommand")
-    ci_sub.required = True
-
-    ci_generate = ci_sub.add_parser(
-        "generate", help="Generate CI pipeline files from images.yaml"
-    )
-    ci_generate.add_argument(
-        "--output-dir",
-        default=".",
-        help="Output directory (default: current directory)",
-    )
-    ci_generate.add_argument(
-        "--platform",
-        default=None,
-        help="CI platform (github). Overrides .cascadeguard.yaml",
-    )
-    ci_generate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview without writing files",
-    )
-
     # scan
     scan = sub.add_parser("scan", help="Discover and analyse container artifacts in a repository")
     scan.add_argument(
@@ -2291,7 +2224,6 @@ def main() -> int:
         "pipeline": cmd_pipeline_dispatcher,
         "vuln":     cmd_vuln,
         "actions":  cmd_actions,
-        "ci":       cmd_ci,
         "scan":     cmd_scan,
     }
 

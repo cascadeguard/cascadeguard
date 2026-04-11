@@ -235,7 +235,7 @@ _print_plan() {
     printf "    ${STEP}. Install CascadeGuard to ${BOLD}${CASCADEGUARD_HOME}${RESET}\n"
     STEP=$((STEP + 1))
     if [ -n "$LINK_DIR" ]; then
-      printf "    ${STEP}. Symlink ${BOLD}cascadeguard${RESET} into ${BOLD}${LINK_DIR}${RESET}\n"
+      printf "    ${STEP}. Symlink ${BOLD}cascadeguard${RESET} and ${BOLD}cg${RESET} into ${BOLD}${LINK_DIR}${RESET}\n"
       STEP=$((STEP + 1))
     fi
   fi
@@ -311,6 +311,7 @@ _configure_options() {
 link_to_path() {
   VENV_BIN="$1"
   TARGET="${VENV_BIN}/cascadeguard"
+  CG_TARGET="${VENV_BIN}/cg"
 
   if command -v cascadeguard >/dev/null 2>&1; then
     EXISTING="$(command -v cascadeguard)"
@@ -320,17 +321,30 @@ link_to_path() {
     else
       ok "cascadeguard already on PATH at ${EXISTING}"
     fi
-    return 0
+  else
+    if [ -z "$LINK_DIR" ]; then
+      warn "Could not find a writable directory on PATH to symlink into"
+      warn "Run manually:  ln -s ${TARGET} /usr/local/bin/cascadeguard"
+      warn "Run manually:  ln -s ${CG_TARGET} /usr/local/bin/cg"
+      return 1
+    fi
+    ln -sf "$TARGET" "${LINK_DIR}/cascadeguard"
+    ok "Linked: ${LINK_DIR}/cascadeguard → ${TARGET}"
   fi
 
-  if [ -z "$LINK_DIR" ]; then
-    warn "Could not find a writable directory on PATH to symlink into"
-    warn "Run manually:  ln -s ${TARGET} /usr/local/bin/cascadeguard"
-    return 1
+  # Also create/update the cg shorthand symlink
+  if command -v cg >/dev/null 2>&1; then
+    EXISTING_CG="$(command -v cg)"
+    if [ -L "$EXISTING_CG" ]; then
+      ln -sf "$CG_TARGET" "$EXISTING_CG"
+      ok "Updated symlink: ${EXISTING_CG} → ${CG_TARGET}"
+    else
+      ok "cg already on PATH at ${EXISTING_CG}"
+    fi
+  elif [ -n "$LINK_DIR" ]; then
+    ln -sf "$CG_TARGET" "${LINK_DIR}/cg"
+    ok "Linked: ${LINK_DIR}/cg → ${CG_TARGET}"
   fi
-
-  ln -sf "$TARGET" "${LINK_DIR}/cascadeguard"
-  ok "Linked: ${LINK_DIR}/cascadeguard → ${TARGET}"
 }
 
 # ---------------------------------------------------------------------------
