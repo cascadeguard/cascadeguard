@@ -167,8 +167,13 @@ Branch naming: `<identifier>/<short-description>` (e.g., `42/add-vulnerability-s
 1. Automated checks run first: lint, type check, unit tests, integration tests, security scan.
 2. A maintainer reviews for correctness, architecture, and code quality.
 3. **Test adequacy review** — the reviewer verifies that the PR tests the right things, not just that tests exist. Check for edge cases, error paths, and that acceptance criteria are covered by tests.
-4. The reviewer comments on the PR. Author addresses feedback in new commits.
-5. Once approved, a maintainer merges to `main`. Contributors do not merge their own PRs.
+4. **Acceptance test gate** — for any PR that changes user-facing behavior (features, API changes, data migrations), the reviewer MUST verify that at least one acceptance test exercises the changed user journey end-to-end:
+   - **API changes**: a test that calls the endpoint and validates the response shape and content.
+   - **UI changes**: a test or documented manual verification plan that walks through the affected flow.
+   - **Data migration / loader changes**: a test that loads the new data source and validates the query contract matches the previous behavior.
+   - If no acceptance test exists, the reviewer sends the PR back with a specific request describing what the test should cover. Do not approve without it.
+5. The reviewer comments on the PR. Author addresses feedback in new commits.
+6. Once approved, a maintainer merges to `main`. Contributors do not merge their own PRs.
 
 ### PR Rules
 
@@ -212,6 +217,7 @@ A change is complete when all of the following are true:
 - [ ] Code is merged to `main` with all CI passing.
 - [ ] PR was reviewed and approved by a maintainer.
 - [ ] Test adequacy confirmed — reviewer verified the right behaviors are tested (see [Review](#review)).
+- [ ] Acceptance test gate passed — for behavior-changing PRs, at least one test exercises the changed user journey end-to-end (see [Acceptance test gate](#review)).
 - [ ] No new lint warnings or type errors introduced.
 - [ ] Tests cover new or changed behavior.
 - [ ] Documentation updated if user-facing behavior changed.
