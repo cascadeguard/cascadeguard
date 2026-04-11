@@ -169,7 +169,7 @@ Branch naming: `<identifier>/<short-description>` (e.g., `42/add-vulnerability-s
 3. **Test adequacy review** — the reviewer verifies that the PR tests the right things, not just that tests exist. Check for edge cases, error paths, and that acceptance criteria are covered by tests.
 4. **Acceptance test gate** — for any PR that changes user-facing behavior (features, API changes, data migrations), the reviewer MUST verify that at least one acceptance test exercises the changed user journey end-to-end:
    - **API changes**: a test that calls the endpoint and validates the response shape and content.
-   - **UI changes**: a test or documented manual verification plan that walks through the affected flow.
+   - **UI changes**: an automated test (e.g. Playwright or Cypress) that exercises the affected flow end-to-end.
    - **Data migration / loader changes**: a test that loads the new data source and validates the query contract matches the previous behavior.
    - If no acceptance test exists, the reviewer sends the PR back with a specific request describing what the test should cover. Do not approve without it.
 5. The reviewer comments on the PR. Author addresses feedback in new commits.
