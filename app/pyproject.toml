@@ -2,8 +2,8 @@
 name = "cascadeguard"
 version = "0.1.0"
 description = "Guardian of the container cascade — event-driven image lifecycle management"
-readme = "README.md"
 requires-python = ">=3.11"
+readme = "README.md"
 license = "BUSL-1.1"
 authors = [
     { name = "CascadeGuard", email = "hello@cascadeguard.com" },

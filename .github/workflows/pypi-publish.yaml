@@ -27,6 +27,18 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      - name: Generate PyPI README
+        working-directory: app
+        run: |
+          python3 -c "
+          from pathlib import Path
+          text = Path('../README.md').read_text()
+          marker = '\n## Repository Structure'
+          idx = text.find(marker)
+          out = text[:idx].rstrip() if idx != -1 else text
+          Path('README.md').write_text(out + '\n')
+          "
+
       - name: Verify version matches
         working-directory: app
         run: |

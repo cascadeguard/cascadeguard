@@ -36,3 +36,6 @@ Thumbs.db
 
 # Internal project docs (local workspace only)
 .ai/
+
+# Generated at build time for PyPI
+app/README.md

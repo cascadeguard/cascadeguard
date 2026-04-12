@@ -1,6 +1,6 @@
 # CascadeGuard
 
-Guardian of the container cascade. Event-driven image lifecycle management with Kargo and ArgoCD.
+Guardian of the container cascade. Event-driven image & tooling lifecycle management that integrates with your build & deployment tooling to eliminate vulnerability to supply chain attacks.
 
 ## Quick Start
 
@@ -22,34 +22,12 @@ cg images check                  # Discover base images, check drift and upstrea
 
 Requires Python 3.11+. Both `cg` and `cascadeguard` are installed as aliases.
 
-## Overview
-
-CascadeGuard automates the process of monitoring base images, discovering Dockerfile dependencies, and orchestrating intelligent container image rebuilds through a GitOps workflow. It uses Kargo for orchestration and generates Kubernetes resources via CDK8s.
-
-## Repository Structure
-
-```
-.
-├── app/                    # Python analysis tool for Dockerfile parsing and state generation
-├── cdk8s/                  # CDK8s application for generating Kargo resources
-│   ├── lib/                # Reusable CDK8s constructs
-│   ├── imports/            # Generated Kargo CRD imports
-│   └── main.py             # Main CDK8s application
-├── tests/                  # Integration and acceptance tests
-│   └── integration/        # Integration test suite
-├── Dockerfile              # Builds the CascadeGuard Docker image
-├── Taskfile.docker.yaml    # Internal Taskfile (baked into Docker image)
-├── Taskfile.shared.yaml    # Shared tasks for state repos (docker run wrappers)
-└── Taskfile.yaml           # Developer tasks for this repo
-```
 
 ## How It Works
 
 1. **Image Enrollment**: Images are defined in `images.yaml` in a state repository
 2. **State Files**: Detailed configuration for each image in `base-images/` and `images/` directories
-3. **CDK8s Generation**: The CDK8s app reads state files and generates Kargo Warehouses, Stages, and AnalysisTemplates
-4. **ArgoCD Deployment**: ArgoCD watches the state repository's `dist/` directory and deploys generated manifests
-5. **Kargo Orchestration**: Kargo manages the image build and promotion pipeline, running analysis jobs that discover base image dependencies
+3. **Kubernetes Manifest Generation**: Uses CDK8s under the hood to generate manifests for popular kubernetes based tools like Kargo, ArgoCD, etc
 
 ## Using CascadeGuard
 
@@ -147,6 +125,27 @@ cg build generate --dry-run    # preview without writing
 ```
 
 Commit the generated files. Adding a new image to `images.yaml` and re-running `cg build generate` will automatically include it in every pipeline.
+
+## Overview
+
+CascadeGuard automates the process of monitoring base images and shared build steps (github action workflows & steps, Gitlab pipelines, etc), discovering Dockerfile dependencies, package vulnerabilities and orchestrating intelligent pinning & container image rebuilds.
+
+## Repository Structure
+
+```
+.
+├── app/                    # Python analysis tool for Dockerfile parsing and state generation
+├── cdk8s/                  # CDK8s application for generating kubernetes resources
+│   ├── lib/                # Reusable CDK8s constructs
+│   ├── imports/            # Generated CRD imports
+│   └── main.py             # Main CDK8s application
+├── tests/                  # Integration and acceptance tests
+│   └── integration/        # Integration test suite
+├── Dockerfile              # Builds the CascadeGuard Docker image
+├── Taskfile.docker.yaml    # Internal Taskfile (baked into Docker image)
+├── Taskfile.shared.yaml    # Shared tasks for state repos (docker run wrappers)
+└── Taskfile.yaml           # Developer tasks for this repo
+```
 
 ## Development
 
