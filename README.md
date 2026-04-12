@@ -130,6 +130,16 @@ Commit the generated files. Adding a new image to `images.yaml` and re-running `
 
 CascadeGuard automates the process of monitoring base images and shared build steps (github action workflows & steps, Gitlab pipelines, etc), discovering Dockerfile dependencies, package vulnerabilities and orchestrating intelligent pinning & container image rebuilds.
 
+## Licensing
+
+CascadeGuard is licensed under the [Business Source License 1.1](LICENSE) (BUSL-1.1).
+
+You are free to use, copy, modify, and distribute CascadeGuard for non-production purposes. Production use is permitted provided you are not offering CascadeGuard to third parties as a commercial container image lifecycle management service or a managed image rebuild service.
+
+On **2030-04-04** (the Change Date), the license automatically converts to the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), at which point CascadeGuard becomes fully open source.
+
+For commercial licensing enquiries, contact [licensing@cascadeguard.com](mailto:licensing@cascadeguard.com).
+
 ## Repository Structure
 
 ```
@@ -163,16 +173,6 @@ Built by your CI/CD pipeline. CascadeGuard discovers their Dockerfile dependenci
 
 ### External Images
 Third-party images tracked directly. CascadeGuard monitors these for new versions.
-
-## Licensing
-
-CascadeGuard is licensed under the [Business Source License 1.1](LICENSE) (BUSL-1.1).
-
-You are free to use, copy, modify, and distribute CascadeGuard for non-production purposes. Production use is permitted provided you are not offering CascadeGuard to third parties as a commercial container image lifecycle management service or a managed image rebuild service.
-
-On **2030-04-04** (the Change Date), the license automatically converts to the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), at which point CascadeGuard becomes fully open source.
-
-For commercial licensing enquiries, contact [licensing@cascadeguard.io](mailto:licensing@cascadeguard.io).
 
 ## Related
 
