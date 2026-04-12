@@ -17,6 +17,7 @@ allowed_owners:
 # Specific actions permitted by name (owner/repo).
 allowed_actions:
   - arduino/setup-task
+  - pypa/gh-action-pypi-publish
 
 # Actions that are always denied, even if the owner is trusted.
 denied_actions: []
