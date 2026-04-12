@@ -136,7 +136,7 @@ CascadeGuard is licensed under the [Business Source License 1.1](LICENSE) (BUSL-
 
 You are free to use, copy, modify, and distribute CascadeGuard for non-production purposes. Production use is permitted provided you are not offering CascadeGuard to third parties as a commercial container image lifecycle management service or a managed image rebuild service.
 
-On **2030-04-04** (the Change Date), the license automatically converts to the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), at which point CascadeGuard becomes fully open source.
+On **2030-04-04** (the Change Date), or four years after each version's first public release (whichever is sooner), the license for that version automatically converts to the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
 For commercial licensing enquiries, contact [licensing@cascadeguard.com](mailto:licensing@cascadeguard.com).
 
