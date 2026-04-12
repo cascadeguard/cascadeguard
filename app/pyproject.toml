@@ -15,11 +15,12 @@ dev = [
 
 [project.scripts]
 cascadeguard = "app:main"
+cg = "app:main"
 
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["app", "actions_policy", "generate_state", "generate_ci"]
+py-modules = ["app", "actions_policy", "generate_state"]
 packages = ["scan"]

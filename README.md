@@ -15,12 +15,12 @@ irm https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/install.ps1
 Then in your state repository:
 
 ```bash
-cascadeguard images validate     # Validate images.yaml
-cascadeguard images generate     # Generate state files
-cascadeguard ci generate         # Generate CI/CD pipelines
+cg images init                   # Scaffold from seed repo (includes workflows)
+cg images validate               # Validate images.yaml
+cg images check                  # Discover base images, check drift and upstream tags
 ```
 
-Requires Python 3.11+.
+Requires Python 3.11+. Both `cg` and `cascadeguard` are installed as aliases.
 
 ## Overview
 
@@ -62,7 +62,14 @@ curl -sSL https://raw.githubusercontent.com/cascadeguard/cascadeguard/main/insta
 
 ### 2. Set up your state repository
 
-Create an `images.yaml` listing the images you want to manage, and a `.cascadeguard.yaml` for repo-level defaults:
+Scaffold a new state repository from the seed repo:
+
+```bash
+mkdir my-images && cd my-images && git init
+cg images init
+```
+
+Or create an `images.yaml` and `.cascadeguard.yaml` manually:
 
 ```yaml
 # .cascadeguard.yaml
@@ -92,19 +99,21 @@ ci:
 
 ```bash
 # Validate images.yaml (applies config defaults before checking)
-cascadeguard images validate
+cg images validate
 
 # Enrol a new image
-cascadeguard images enrol --name myapp --registry ghcr.io --repository org/myapp
+cg images enrol --name myapp --registry ghcr.io --repository org/myapp
 
-# Generate state files from images.yaml
-cascadeguard images generate
+# Check for base image drift and new upstream tags
+cg images check
+cg images check --format json    # JSON output for CI consumption
+cg images check --image myapp    # Scope to a single image
 
 # Generate CI/CD pipeline files (GitHub Actions)
-cascadeguard ci generate
+cg build generate
 
 # Generate CI with explicit platform or dry-run
-cascadeguard ci generate --platform github --dry-run
+cg build generate --platform github --dry-run
 ```
 
 See [cascadeguard-exemplar](https://github.com/cascadeguard/cascadeguard-exemplar) for a complete working example.
@@ -121,33 +130,9 @@ Common fields can be set once in `.cascadeguard.yaml` under `defaults` instead o
 
 Per-image values in `images.yaml` always override the defaults.
 
-## Development
-
-### Setup
-
-```bash
-task app:setup      # Set up the app Python environment
-task cdk8s:setup    # Set up the CDK8s Python environment
-```
-
-### Testing
-
-```bash
-task test:unit           # Unit tests for app and cdk8s
-task test:integration    # Integration tests
-task test:acceptance     # Kargo acceptance tests (requires cluster)
-```
-
-### Building the Docker Image Locally
-
-```bash
-docker build -t cascadeguard:dev .
-docker run --rm -v $(pwd)/path/to/state:/workspace cascadeguard:dev generate
-```
-
 ## Generating CI/CD Pipelines
 
-`cascadeguard ci generate` reads `images.yaml` and emits four GitHub Actions workflow files under `.github/workflows/`:
+`cg build generate` reads `images.yaml` and emits four GitHub Actions workflow files under `.github/workflows/`:
 
 | File | Trigger | Purpose |
 |------|---------|---------|
@@ -157,11 +142,17 @@ docker run --rm -v $(pwd)/path/to/state:/workspace cascadeguard:dev generate
 | `release.yaml` | Tag push (`v*`) | Builds, signs, and pushes all images; creates a GitHub Release with changelog |
 
 ```bash
-cascadeguard ci generate
-cascadeguard ci generate --dry-run    # preview without writing
+cg build generate
+cg build generate --dry-run    # preview without writing
 ```
 
-Commit the generated files. Adding a new image to `images.yaml` and re-running `cascadeguard ci generate` will automatically include it in every pipeline.
+Commit the generated files. Adding a new image to `images.yaml` and re-running `cg build generate` will automatically include it in every pipeline.
+
+## Development
+
+See [Contributing](CONTRIBUTING.md) for branch naming, PR process, and coding standards.
+
+For local development setup (Python environments, testing, Docker builds), see the [Development Guide](https://github.com/cascadeguard/cascadeguard-docs/blob/main/docs/contributing/development.md).
 
 ## Image Types
 
