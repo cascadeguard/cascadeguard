@@ -39,7 +39,7 @@ Requires Python 3.11+.
 ## Documentation
 
 - [GitHub](https://github.com/cascadeguard/cascadeguard)
-- [Docs](https://docs.cascadeguard.io)
+- [Docs](https://docs.cascadeguard.com)
 
 ## License
 

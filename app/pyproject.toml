@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "BUSL-1.1"
 authors = [
-    { name = "CascadeGuard", email = "hello@cascadeguard.io" },
+    { name = "CascadeGuard", email = "hello@cascadeguard.com" },
 ]
 keywords = ["containers", "docker", "image-lifecycle", "kargo", "argocd", "gitops", "security"]
 classifiers = [
@@ -36,8 +36,8 @@ cascadeguard = "app:main"
 cg = "app:main"
 
 [project.urls]
-Homepage = "https://cascadeguard.io"
-Documentation = "https://docs.cascadeguard.io"
+Homepage = "https://cascadeguard.com"
+Documentation = "https://docs.cascadeguard.com"
 Repository = "https://github.com/cascadeguard/cascadeguard"
 Issues = "https://github.com/cascadeguard/cascadeguard/issues"
 
