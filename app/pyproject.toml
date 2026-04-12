@@ -1,8 +1,26 @@
 [project]
-name = "cascadeguard-tool"
+name = "cascadeguard"
 version = "0.1.0"
-description = "CascadeGuard Dockerfile Analysis Tool"
+description = "Guardian of the container cascade — event-driven image lifecycle management"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "BUSL-1.1"
+authors = [
+    { name = "CascadeGuard", email = "hello@cascadeguard.io" },
+]
+keywords = ["containers", "docker", "image-lifecycle", "kargo", "argocd", "gitops", "security"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Systems Administration",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",
@@ -16,6 +34,12 @@ dev = [
 [project.scripts]
 cascadeguard = "app:main"
 cg = "app:main"
+
+[project.urls]
+Homepage = "https://cascadeguard.io"
+Documentation = "https://docs.cascadeguard.io"
+Repository = "https://github.com/cascadeguard/cascadeguard"
+Issues = "https://github.com/cascadeguard/cascadeguard/issues"
 
 [build-system]
 requires = ["setuptools>=45", "wheel"]
