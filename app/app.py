@@ -30,7 +30,7 @@ import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 import logging
 
@@ -956,6 +956,264 @@ def _is_stable_tag(tag: str) -> bool:
     return True
 
 
+# ── Quarantine ─────────────────────────────────────────────────────────────
+
+# Built-in default quarantine period (hours).  Overridden by
+# .cascadeguard.yaml  →  per-image in images.yaml.
+_DEFAULT_QUARANTINE_HOURS = 48
+
+
+def _parse_duration(value) -> Optional[int]:
+    """Parse a human duration string (e.g. '48h', '7d', '0') into hours.
+
+    Returns None when *value* is None or empty so callers can fall through
+    the config hierarchy.
+    """
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s in ("0", "none", "false", "disabled"):
+        return 0
+    m = re.match(r"^(\d+)\s*(h|d)$", s)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return n if unit == "h" else n * 24
+    # bare integer → treat as hours
+    if s.isdigit():
+        return int(s)
+    return None
+
+
+def _resolve_quarantine_hours(image: dict, config: dict) -> int:
+    """Resolve quarantine period for *image* using the config hierarchy.
+
+    Priority (highest wins):
+      1. images.yaml  per-image ``quarantine``
+      2. .cascadeguard.yaml  ``quarantine.period``
+      3. Built-in default (48 h)
+    """
+    # Per-image override
+    per_image = _parse_duration(image.get("quarantine"))
+    if per_image is not None:
+        return per_image
+
+    # Repo-level config
+    repo_level = _parse_duration(
+        config.get("quarantine", {}).get("period")
+        if isinstance(config.get("quarantine"), dict)
+        else config.get("quarantine")
+    )
+    if repo_level is not None:
+        return repo_level
+
+    return _DEFAULT_QUARANTINE_HOURS
+
+
+def _resolve_bool_setting(key: str, image: dict, config: dict, default: bool = True) -> bool:
+    """Resolve a boolean setting using the standard config hierarchy.
+
+    Priority (highest wins):
+      1. images.yaml  per-image value
+      2. .cascadeguard.yaml  value (nested under ``check:`` or top-level)
+      3. Built-in *default*
+    """
+    # Per-image override
+    per_image = image.get(key)
+    if per_image is not None:
+        return bool(per_image)
+
+    # Repo-level config — check under "check:" section first, then top-level
+    check_section = config.get("check", {})
+    if isinstance(check_section, dict) and key in check_section:
+        return bool(check_section[key])
+    if key in config:
+        return bool(config[key])
+
+    return default
+
+
+def _update_dockerfile_digest(dockerfile_path: Path, old_ref: str, new_digest: str) -> bool:
+    """Pin a Dockerfile FROM line to *new_digest*.
+
+    Transforms  ``FROM image:tag``  →  ``FROM image:tag@sha256:…``
+    and         ``FROM image:tag@sha256:old``  →  ``FROM image:tag@sha256:new``
+
+    Returns True if the file was modified.
+    """
+    if not dockerfile_path.exists():
+        return False
+
+    content = dockerfile_path.read_text()
+    lines = content.splitlines(keepends=True)
+    modified = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.upper().startswith("FROM "):
+            continue
+        # Extract the image reference (first token after FROM)
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        ref = parts[1]
+
+        # Match against old_ref (with or without existing digest)
+        base_ref = ref.split("@")[0]
+        old_base = old_ref.split("@")[0]
+        if base_ref != old_base:
+            continue
+
+        new_ref = f"{base_ref}@{new_digest}"
+        if ref == new_ref:
+            continue  # already pinned to this digest
+
+        lines[i] = line.replace(ref, new_ref, 1)
+        modified = True
+
+    if modified:
+        dockerfile_path.write_text("".join(lines))
+    return modified
+
+
+def _create_promotion_pr(
+    repo_root: Path,
+    promoted: List[Dict],
+    quarantine_hours: Dict[str, int],
+) -> List[str]:
+    """Open one PR per base image, dependabot-style.
+
+    Groups *promoted* entries by base image, creates a branch and PR for
+    each group.  This keeps PRs independent so they can be merged (or
+    reverted) individually and only the affected images rebuild.
+
+    Returns a list of PR URLs that were successfully created.
+    """
+    if shutil.which("gh") is None:
+        print("Warning: 'gh' CLI not found — skipping PR creation", file=sys.stderr)
+        return []
+
+    # Configure git once
+    _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
+    _run_git(repo_root, ["config", "user.email", "cascadeguard[bot]@users.noreply.github.com"])
+
+    # Group promoted entries by base image
+    by_base: Dict[str, List[Dict]] = {}
+    for p in promoted:
+        by_base.setdefault(p["base_image"], []).append(p)
+
+    scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    pr_urls: List[str] = []
+
+    for base_image, entries in by_base.items():
+        branch = f"cascadeguard/promote-{base_image}-{scan_date}"
+        new_digest = entries[0]["new_digest"]
+        q_hours = quarantine_hours.get(base_image, _DEFAULT_QUARANTINE_HOURS)
+        image_names = [e["image"] for e in entries]
+
+        # Create branch from main
+        _run_git(repo_root, ["checkout", "-B", branch, "main"])
+
+        # Re-apply the Dockerfile changes on this clean branch
+        for e in entries:
+            df_path = repo_root / e["dockerfile"]
+            _update_dockerfile_digest(
+                df_path,
+                e.get("full_ref", base_image),
+                new_digest,
+            )
+            _run_git(repo_root, ["add", e["dockerfile"]])
+
+        # Check there's something to commit
+        rc = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=repo_root,
+            capture_output=True,
+        )
+        if rc.returncode == 0:
+            _run_git(repo_root, ["checkout", "main"])
+            continue
+
+        # Commit
+        if len(image_names) == 1:
+            commit_title = f"chore(deps): bump {base_image} in {image_names[0]}"
+        else:
+            commit_title = f"chore(deps): bump {base_image} in {len(image_names)} image(s)"
+
+        commit_body_lines = [
+            f"Upstream base image `{base_image}` passed {q_hours}h quarantine.",
+            f"Pinning Dockerfile(s) to digest `{new_digest[:24]}…`\n",
+        ]
+        for e in entries:
+            commit_body_lines.append(f"  • {e['dockerfile']}")
+        commit_body_lines.append(f"\nCo-Authored-By: Paperclip <noreply@paperclip.ing>")
+        commit_msg = f"{commit_title}\n\n" + "\n".join(commit_body_lines)
+
+        _run_git(repo_root, ["commit", "-m", commit_msg])
+        _run_git(repo_root, ["push", "-u", "origin", branch, "--force"])
+
+        # Build PR body
+        pr_body_lines = [
+            f"## Upstream Promotion — `{base_image}`\n",
+            f"Bumps the `{base_image}` base image to digest "
+            f"`{new_digest[:24]}…`\n",
+            "### Quarantine\n",
+            f"| Rule | Value |",
+            f"|------|-------|",
+            f"| Quarantine period | **{q_hours}h** |",
+            f"| Drift detected | state file `lastUpdated` |",
+            f"| Eligible at | `lastUpdated + {q_hours}h` ✓ |",
+            "",
+            "### Affected images\n",
+            "| Image | Dockerfile |",
+            "|-------|-----------|",
+        ]
+        for e in entries:
+            pr_body_lines.append(f"| {e['image']} | `{e['dockerfile']}` |")
+        pr_body_lines.append("")
+        pr_body_lines.append(
+            "> Merging this PR will trigger the build pipeline for the "
+            "affected image(s) only."
+        )
+        pr_body_lines.append(
+            "> Created automatically by `cascadeguard images check "
+            "--promote --create-pr`."
+        )
+        pr_body = "\n".join(pr_body_lines)
+
+        result = subprocess.run(
+            [
+                "gh", "pr", "create",
+                "--title", commit_title,
+                "--body", pr_body,
+                "--base", "main",
+                "--head", branch,
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"  Warning: PR for {base_image} failed: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+        else:
+            pr_url = result.stdout.strip()
+            pr_urls.append(pr_url)
+            print(f"  PR created for {base_image}: {pr_url}", file=sys.stderr)
+
+        _run_git(repo_root, ["checkout", "main"])
+
+    return pr_urls
+
+
+def _run_git(cwd: Path, args: List[str]):
+    """Run a git command, raising on failure."""
+    subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True)
+
+
 def cmd_check(args) -> int:
     """Unified check: generate state, discover base images, query registries."""
     from generate_state import (
@@ -986,6 +1244,14 @@ def cmd_check(args) -> int:
 
     image_filter: Optional[str] = getattr(args, "image", None)
     fmt: str = getattr(args, "format", "table")
+
+    # Resolve promote/create-pr: CLI flag (explicit) > config > default (true)
+    promote_flag = getattr(args, "promote", None)
+    create_pr_flag = getattr(args, "create_pr", None)
+    # These are resolved per-image for promote, but we need a repo-level
+    # default for the overall flow.  Per-image override happens in Phase 5.
+    do_promote = promote_flag if promote_flag is not None else _resolve_bool_setting("promote", {}, config, default=True)
+    do_create_pr = create_pr_flag if create_pr_flag is not None else _resolve_bool_setting("createPr", {}, config, default=True)
 
     # ── Phase 1: Generate image state + discover base images ───────────────
     all_base_image_refs: Dict[str, str] = {}  # normalized_name -> full image ref
@@ -1094,7 +1360,7 @@ def cmd_check(args) -> int:
                 results.append({"image": f"base:{name}", "status": "error", "reason": "registry unreachable"})
             elif recorded_digest is None:
                 results.append({"image": f"base:{name}", "status": "new", "live": live_digest})
-                # Record the digest
+                # Record the digest — first observation, quarantine starts now
                 state["currentDigest"] = live_digest
                 state["lastUpdated"] = datetime.now(timezone.utc).isoformat()
                 tool.write_base_image_state(state, state_file)
@@ -1163,6 +1429,106 @@ def cmd_check(args) -> int:
                     print(f"  ? {img}: {r['reason']}")
                 elif status == "skipped":
                     print(f"  - {img}: skipped ({r['reason']})")
+
+    # ── Phase 5: Promote images past quarantine ────────────────────────────
+    promoted: List[Dict] = []
+    quarantine_hours_map: Dict[str, int] = {}
+
+    if do_promote:
+        now_dt = datetime.now(timezone.utc)
+
+        # Build a map: base_image_name -> {digest, lastUpdated} from state files
+        base_image_states: Dict[str, Dict] = {}
+        if base_images_dir.exists():
+            for state_file in sorted(base_images_dir.glob("*.yaml")):
+                with open(state_file) as f:
+                    st = yaml.safe_load(f) or {}
+                bi_name = st.get("name", state_file.stem)
+                base_image_states[bi_name] = st
+
+        # For each enrolled image, check if its base images have passed quarantine
+        for image in resolved_images:
+            img_name = image.get("name")
+            if not img_name or not image.get("enabled", True):
+                continue
+            if image_filter and img_name != image_filter:
+                continue
+
+            # Per-image promote override (images.yaml `promote: false`)
+            if not _resolve_bool_setting("promote", image, config, default=True):
+                continue
+
+            dockerfile_rel = image.get("dockerfile") or image.get("source", {}).get("dockerfile")
+            if not dockerfile_rel:
+                continue
+
+            dockerfile_path = repo_root / dockerfile_rel
+            if not dockerfile_path.exists():
+                continue
+
+            q_hours = _resolve_quarantine_hours(image, config)
+
+            # Check each base image this image depends on
+            img_state_file = images_dir / f"{img_name}.yaml"
+            if not img_state_file.exists():
+                continue
+            with open(img_state_file) as f:
+                img_state = yaml.safe_load(f) or {}
+            dep_base_images = img_state.get("baseImages", [])
+
+            for bi_name in dep_base_images:
+                bi_state = base_image_states.get(bi_name)
+                if not bi_state:
+                    continue
+
+                current_digest = bi_state.get("currentDigest")
+                last_updated_str = bi_state.get("lastUpdated")
+                if not current_digest or not last_updated_str:
+                    continue
+
+                # Parse lastUpdated and check quarantine
+                try:
+                    last_updated = datetime.fromisoformat(last_updated_str)
+                    if last_updated.tzinfo is None:
+                        last_updated = last_updated.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+
+                eligible_at = last_updated + timedelta(hours=q_hours)
+                if now_dt < eligible_at:
+                    remaining = eligible_at - now_dt
+                    hours_left = remaining.total_seconds() / 3600
+                    print(
+                        f"  ⏳ {img_name}: {bi_name} in quarantine ({hours_left:.0f}h remaining)",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                # Quarantine passed — update the Dockerfile
+                full_ref = all_base_image_refs.get(bi_name, bi_state.get("fullImage", ""))
+                if not full_ref:
+                    continue
+
+                modified = _update_dockerfile_digest(dockerfile_path, full_ref, current_digest)
+                if modified:
+                    quarantine_hours_map[bi_name] = q_hours
+                    promoted.append({
+                        "image": img_name,
+                        "base_image": bi_name,
+                        "dockerfile": dockerfile_rel,
+                        "new_digest": current_digest,
+                        "quarantine_hours": q_hours,
+                        "full_ref": full_ref,
+                    })
+                    print(
+                        f"  ✓ {img_name}: promoted {bi_name} → {current_digest[:16]}… (quarantine: {q_hours}h)",
+                        file=sys.stderr,
+                    )
+
+    # ── Phase 6: Create PRs if requested (one per base image) ────────────
+    pr_urls: List[str] = []
+    if do_create_pr and promoted:
+        pr_urls = _create_promotion_pr(repo_root, promoted, quarantine_hours_map)
 
     return 1 if (has_drift or has_new_tags) else 0
 
@@ -1977,6 +2343,18 @@ Commands:
         choices=["json", "table"],
         default="table",
         help="Output format: table (default) or json",
+    )
+    images_check.add_argument(
+        "--promote",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Update Dockerfiles for base images that have passed quarantine (default: true, use --no-promote to disable)",
+    )
+    images_check.add_argument(
+        "--create-pr",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Open a PR with promoted Dockerfile changes (default: true, use --no-create-pr to disable)",
     )
 
     # images status
