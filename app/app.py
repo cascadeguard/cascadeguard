@@ -800,11 +800,20 @@ def cmd_validate(args) -> int:
         if not image.get("enabled", True):
             continue
 
-        # Enabled images need registry and dockerfile
+        # Images with build.enabled: false are upstream-tracked only —
+        # they don't need registry or dockerfile
+        build_config = image.get("build", {})
+        if isinstance(build_config, dict) and build_config.get("enabled") is False:
+            continue
+
+        # Resolve dockerfile from source.dockerfile or legacy root dockerfile
+        source = image.get("source", {})
+        dockerfile = source.get("dockerfile") or image.get("dockerfile")
+
         if not image.get("registry"):
             errors.append(f"Image '{name}': missing 'registry' (set in image or .cascadeguard.yaml defaults)")
-        if not image.get("dockerfile"):
-            errors.append(f"Image '{name}': missing 'dockerfile' field")
+        if not dockerfile:
+            errors.append(f"Image '{name}': missing 'source.dockerfile' field")
 
     if errors:
         print("Validation errors:", file=sys.stderr)
