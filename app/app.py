@@ -800,11 +800,20 @@ def cmd_validate(args) -> int:
         if not image.get("enabled", True):
             continue
 
-        # Enabled images need registry and dockerfile
+        # Images with build.enabled: false are upstream-tracked only —
+        # they don't need registry or dockerfile
+        build_config = image.get("build", {})
+        if isinstance(build_config, dict) and build_config.get("enabled") is False:
+            continue
+
+        # Resolve dockerfile from source.dockerfile or legacy root dockerfile
+        source = image.get("source", {})
+        dockerfile = source.get("dockerfile") or image.get("dockerfile")
+
         if not image.get("registry"):
             errors.append(f"Image '{name}': missing 'registry' (set in image or .cascadeguard.yaml defaults)")
-        if not image.get("dockerfile"):
-            errors.append(f"Image '{name}': missing 'dockerfile' field")
+        if not dockerfile:
+            errors.append(f"Image '{name}': missing 'source.dockerfile' field")
 
     if errors:
         print("Validation errors:", file=sys.stderr)
@@ -1094,6 +1103,40 @@ def _resolve_bool_setting(key: str, image: dict, config: dict, default: bool = T
     return default
 
 
+def _resolve_check_config(config: dict) -> dict:
+    """Resolve the full check configuration from .cascadeguard.yaml.
+
+    Returns a dict with resolved values::
+
+        {
+            "state": {"destination": "main"},
+            "promote": {"enabled": True, "destination": "pr"},
+        }
+    """
+    check = config.get("check", {})
+    if not isinstance(check, dict):
+        check = {}
+
+    state_section = check.get("state", {})
+    if not isinstance(state_section, dict):
+        state_section = {}
+
+    promote_section = check.get("promote", {})
+    if not isinstance(promote_section, dict):
+        # Backwards compat: check.promote: true/false
+        promote_section = {"enabled": bool(promote_section)}
+
+    return {
+        "state": {
+            "destination": state_section.get("destination", "main"),
+        },
+        "promote": {
+            "enabled": promote_section.get("enabled", True),
+            "destination": promote_section.get("destination", "pr"),
+        },
+    }
+
+
 def _update_dockerfile_digest(dockerfile_path: Path, old_ref: str, new_digest: str) -> bool:
     """Pin a Dockerfile FROM line to *new_digest*.
 
@@ -1274,6 +1317,75 @@ def _run_git(cwd: Path, args: List[str]):
     subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True)
 
 
+def _commit_state_changes(repo_root: Path, state_dir: Path, destination: str) -> bool:
+    """Commit state file changes to main or via PR.
+
+    Args:
+        repo_root: Repository root.
+        state_dir: Path to .cascadeguard/ state directory.
+        destination: "main" to commit directly, "pr" to open a PR.
+
+    Returns True if changes were committed.
+    """
+    _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
+    _run_git(repo_root, ["config", "user.email", "cascadeguard[bot]@users.noreply.github.com"])
+
+    # Stage state files
+    try:
+        _run_git(repo_root, ["add", str(state_dir)])
+    except subprocess.CalledProcessError:
+        pass
+
+    # Check if there's anything to commit
+    rc = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=repo_root, capture_output=True,
+    )
+    if rc.returncode == 0:
+        print("No state changes to commit.", file=sys.stderr)
+        return False
+
+    scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    commit_msg = (
+        f"chore(state): update image state {scan_date}\n\n"
+        "Automated check run. State files updated for drift detection.\n\n"
+        "Co-Authored-By: Paperclip <noreply@paperclip.ing>"
+    )
+
+    if destination == "main":
+        _run_git(repo_root, ["commit", "-m", commit_msg])
+        _run_git(repo_root, ["push", "origin", "main"])
+        print(f"  State changes committed to main.", file=sys.stderr)
+        return True
+
+    elif destination == "pr":
+        branch = f"cascadeguard/state-{scan_date}"
+        _run_git(repo_root, ["checkout", "-B", branch, "main"])
+        _run_git(repo_root, ["commit", "-m", commit_msg])
+        _run_git(repo_root, ["push", "-u", "origin", branch, "--force"])
+
+        if shutil.which("gh"):
+            result = subprocess.run(
+                [
+                    "gh", "pr", "create",
+                    "--title", f"chore(state): update image state {scan_date}",
+                    "--body", "Automated state file update from `cascadeguard images check`.",
+                    "--base", "main",
+                    "--head", branch,
+                ],
+                cwd=repo_root, capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print(f"  State PR created: {result.stdout.strip()}", file=sys.stderr)
+            else:
+                print(f"  Warning: State PR creation failed: {result.stderr.strip()}", file=sys.stderr)
+
+        _run_git(repo_root, ["checkout", "main"])
+        return True
+
+    return False
+
+
 def cmd_check(args) -> int:
     """Unified check: generate state, discover base images, query registries."""
     from generate_state import (
@@ -1304,14 +1416,20 @@ def cmd_check(args) -> int:
 
     image_filter: Optional[str] = getattr(args, "image", None)
     fmt: str = getattr(args, "format", "table")
+    no_commit: bool = getattr(args, "no_commit", False)
 
-    # Resolve promote/create-pr: CLI flag (explicit) > config > default (true)
+    # Resolve check config from .cascadeguard.yaml
+    check_config = _resolve_check_config(config)
+
+    # CLI flags override config
     promote_flag = getattr(args, "promote", None)
-    create_pr_flag = getattr(args, "create_pr", None)
-    # These are resolved per-image for promote, but we need a repo-level
-    # default for the overall flow.  Per-image override happens in Phase 5.
-    do_promote = promote_flag if promote_flag is not None else _resolve_bool_setting("promote", {}, config, default=True)
-    do_create_pr = create_pr_flag if create_pr_flag is not None else _resolve_bool_setting("createPr", {}, config, default=True)
+    do_promote = promote_flag if promote_flag is not None else check_config["promote"]["enabled"]
+    promote_destination = check_config["promote"]["destination"]
+    state_destination = check_config["state"]["destination"]
+
+    if no_commit:
+        state_destination = "none"
+        promote_destination = "none"
 
     # ── Phase 1: Generate image state + discover base images ───────────────
     all_base_image_refs: Dict[str, str] = {}  # normalized_name -> full image ref
@@ -1327,7 +1445,7 @@ def cmd_check(args) -> int:
 
         # Find Dockerfile (local or remote)
         source = image.get("source", {})
-        dockerfile_rel = image.get("dockerfile") or source.get("dockerfile")
+        dockerfile_rel = source.get("dockerfile") or image.get("dockerfile")
         base_images = []
 
         if dockerfile_rel:
@@ -1539,7 +1657,7 @@ def cmd_check(args) -> int:
             if not _resolve_bool_setting("promote", image, config, default=True):
                 continue
 
-            dockerfile_rel = image.get("dockerfile") or image.get("source", {}).get("dockerfile")
+            dockerfile_rel = image.get("source", {}).get("dockerfile") or image.get("dockerfile")
             if not dockerfile_rel:
                 continue
 
@@ -1633,10 +1751,34 @@ def cmd_check(args) -> int:
                     bi_state_file = base_images_dir / f"{bi_name}.yaml"
                     tool.write_base_image_state(bi_state, bi_state_file)
 
-    # ── Phase 6: Create PRs if requested (one per base image) ────────────
+    # ── Phase 6: Commit state changes ─────────────────────────────────────
+    if state_destination != "none":
+        try:
+            _commit_state_changes(repo_root, state_dir, state_destination)
+        except Exception as exc:
+            print(f"  Warning: state commit failed: {exc}", file=sys.stderr)
+
+    # ── Phase 7: Create PRs for promotions (one per base image) ───────────
     pr_urls: List[str] = []
-    if do_create_pr and promoted:
+    if promoted and promote_destination == "pr":
         pr_urls = _create_promotion_pr(repo_root, promoted, quarantine_hours_map)
+    elif promoted and promote_destination == "main":
+        # Commit Dockerfile changes directly to main
+        try:
+            _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
+            _run_git(repo_root, ["config", "user.email", "cascadeguard[bot]@users.noreply.github.com"])
+            for p in promoted:
+                _run_git(repo_root, ["add", p["dockerfile"]])
+            scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            names = [p["image"] for p in promoted]
+            _run_git(repo_root, ["commit", "-m",
+                f"chore(deps): promote {len(promoted)} base image(s) — {scan_date}\n\n"
+                + "\n".join(f"  • {p['image']}: {p['base_image']} → {p['new_digest'][:24]}…" for p in promoted)
+                + f"\n\nCo-Authored-By: Paperclip <noreply@paperclip.ing>"])
+            _run_git(repo_root, ["push", "origin", "main"])
+            print(f"  Promoted {len(promoted)} image(s) directly to main.", file=sys.stderr)
+        except Exception as exc:
+            print(f"  Warning: promotion commit failed: {exc}", file=sys.stderr)
 
     return 1 if (has_drift or has_new_tags) else 0
 
@@ -2456,13 +2598,13 @@ Commands:
         "--promote",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Update Dockerfiles for base images that have passed quarantine (default: true, use --no-promote to disable)",
+        help="Update Dockerfiles for base images that have passed quarantine (default: from config, use --no-promote to disable)",
     )
     images_check.add_argument(
-        "--create-pr",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Open a PR with promoted Dockerfile changes (default: true, use --no-create-pr to disable)",
+        "--no-commit",
+        action="store_true",
+        default=False,
+        help="Dry run — skip all git commit/push/PR operations",
     )
 
     # images status

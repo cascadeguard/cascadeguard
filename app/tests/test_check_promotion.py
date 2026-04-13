@@ -40,7 +40,7 @@ def _args(**kwargs):
         image=None,
         format="table",
         promote=None,       # None = resolve from config (default: true)
-        create_pr=None,     # None = resolve from config (default: true)
+        no_commit=True,     # Tests don't run git operations
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -158,7 +158,7 @@ class TestDriftWithQuarantineNotElapsed:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, one_hour_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert "@sha256:" not in content
@@ -175,7 +175,7 @@ class TestDriftWithQuarantineNotElapsed:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, one_hour_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         err = capsys.readouterr().err
         assert "quarantine" in err.lower()
@@ -197,7 +197,7 @@ class TestDriftWithQuarantineElapsed:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
@@ -214,7 +214,7 @@ class TestDriftWithQuarantineElapsed:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         err = capsys.readouterr().err
         assert "promoted" in err.lower()
@@ -232,7 +232,7 @@ class TestDriftWithQuarantineElapsed:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         bi_state = yaml.safe_load((Path(state_dir) / "base-images" / "node-22.yaml").read_text())
         assert bi_state["promotedDigest"] == DIGEST_NEW
@@ -253,7 +253,7 @@ class TestDriftWithQuarantineElapsed:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert "@sha256:" not in content
@@ -276,7 +276,7 @@ class TestQuarantineUsesPublishedAt:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, published)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
@@ -298,7 +298,7 @@ class TestQuarantineDisabled:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, just_now)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
@@ -316,7 +316,7 @@ class TestQuarantineDisabled:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, just_now)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
@@ -339,7 +339,7 @@ class TestNoDrift:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_OLD, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         assert rc == 0
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -360,7 +360,7 @@ class TestPerImagePromoteFalse:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert "@sha256:" not in content
@@ -380,7 +380,7 @@ class TestRepoLevelPromoteFalse:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert "@sha256:" not in content
@@ -400,7 +400,7 @@ class TestNoPromoteFlag:
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir,
-                                promote=False, create_pr=False))
+                                promote=False))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert "@sha256:" not in content
@@ -420,7 +420,7 @@ class TestCustomQuarantinePeriod:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, three_hours_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
@@ -438,7 +438,7 @@ class TestCustomQuarantinePeriod:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, three_days_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert "@sha256:" not in content
@@ -458,7 +458,7 @@ class TestRepoLevelQuarantine:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, two_hours_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
@@ -482,7 +482,7 @@ class TestUpdateHistory:
         new_published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, new_published)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, create_pr=False))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         bi_state = yaml.safe_load((Path(state_dir) / "base-images" / "node-22.yaml").read_text())
         assert bi_state["currentDigest"] == DIGEST_NEW
@@ -496,12 +496,12 @@ class TestUpdateHistory:
         assert latest["promotedAt"] is None  # still in quarantine
 
 
-class TestNoCreatePrConfig:
-    """check.createPr: false → promote but no PR."""
+class TestPromoteDestinationMain:
+    """check.promote.destination: main → Dockerfile still gets modified."""
 
-    def test_promotes_without_pr(self, tmp_path):
+    def test_dockerfile_promoted(self, tmp_path):
         images_yaml, state_dir = _setup_repo(tmp_path, [_MYAPP], _MYAPP_DF,
-            config={"check": {"createPr": False}})
+            config={"check": {"promote": {"enabled": True, "destination": "main"}}})
         long_ago = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         _seed_base_image_state(state_dir, "node-22",
                                 digest=DIGEST_NEW,
@@ -512,12 +512,7 @@ class TestNoCreatePrConfig:
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
             with patch("app._get_dockerhub_tags", return_value=[]):
-                with patch("subprocess.run") as mock_run:
-                    cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
-
-        for c in mock_run.call_args_list:
-            args = c[0][0] if c[0] else []
-            assert "gh" not in args

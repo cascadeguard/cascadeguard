@@ -238,14 +238,59 @@ class TestCliPromoteDefaults:
         args = parser.parse_args(["images", "check", "--promote"])
         assert args.promote is True
 
-    def test_create_pr_default_none(self):
+    def test_no_commit_default_false(self):
         from app import build_parser
         parser = build_parser()
         args = parser.parse_args(["images", "check"])
-        assert args.create_pr is None
+        assert args.no_commit is False
 
-    def test_no_create_pr_flag(self):
+    def test_no_commit_flag(self):
         from app import build_parser
         parser = build_parser()
-        args = parser.parse_args(["images", "check", "--no-create-pr"])
-        assert args.create_pr is False
+        args = parser.parse_args(["images", "check", "--no-commit"])
+        assert args.no_commit is True
+
+
+# ── _resolve_check_config ──────────────────────────────────────────────────
+
+from app import _resolve_check_config
+
+
+class TestResolveCheckConfig:
+    def test_defaults(self):
+        result = _resolve_check_config({})
+        assert result["state"]["destination"] == "main"
+        assert result["promote"]["enabled"] is True
+        assert result["promote"]["destination"] == "pr"
+
+    def test_state_destination_pr(self):
+        config = {"check": {"state": {"destination": "pr"}}}
+        result = _resolve_check_config(config)
+        assert result["state"]["destination"] == "pr"
+
+    def test_promote_disabled(self):
+        config = {"check": {"promote": {"enabled": False}}}
+        result = _resolve_check_config(config)
+        assert result["promote"]["enabled"] is False
+        assert result["promote"]["destination"] == "pr"
+
+    def test_promote_destination_main(self):
+        config = {"check": {"promote": {"destination": "main"}}}
+        result = _resolve_check_config(config)
+        assert result["promote"]["enabled"] is True
+        assert result["promote"]["destination"] == "main"
+
+    def test_backwards_compat_promote_bool(self):
+        config = {"check": {"promote": False}}
+        result = _resolve_check_config(config)
+        assert result["promote"]["enabled"] is False
+
+    def test_full_config(self):
+        config = {"check": {
+            "state": {"destination": "pr"},
+            "promote": {"enabled": True, "destination": "main"},
+        }}
+        result = _resolve_check_config(config)
+        assert result["state"]["destination"] == "pr"
+        assert result["promote"]["enabled"] is True
+        assert result["promote"]["destination"] == "main"
