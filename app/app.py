@@ -178,8 +178,11 @@ class CascadeGuardTool:
             'firstDiscovered': now,
             'lastChecked': now,
             'currentDigest': None,
-            'lastUpdated': None,
+            'publishedAt': None,
+            'observedAt': None,
             'previousDigest': None,
+            'promotedDigest': None,
+            'promotedAt': None,
             'rebuildEligibleAt': {'default': None},
             'metadata': {},
             'updateHistory': [],
@@ -211,9 +214,14 @@ class CascadeGuardTool:
             f.write(f"lastChecked: {yaml.dump(state['lastChecked'], default_flow_style=True).strip()}\n\n")
             
             f.write("# Current state\n")
-            f.write(f"currentDigest: {self._yaml_value(state['currentDigest'])}\n")
-            f.write(f"lastUpdated: {self._yaml_value(state['lastUpdated'])}  # Will be set when digest first changes\n")
-            f.write(f"previousDigest: {self._yaml_value(state['previousDigest'])}\n\n")
+            f.write(f"currentDigest: {self._yaml_value(state.get('currentDigest'))}\n")
+            f.write(f"publishedAt: {self._yaml_value(state.get('publishedAt'))}  # when upstream built this digest\n")
+            f.write(f"observedAt: {self._yaml_value(state.get('observedAt'))}  # when we first saw this digest\n")
+            f.write(f"previousDigest: {self._yaml_value(state.get('previousDigest'))}\n\n")
+            
+            f.write("# Promotion tracking\n")
+            f.write(f"promotedDigest: {self._yaml_value(state.get('promotedDigest'))}  # last digest pinned in Dockerfiles\n")
+            f.write(f"promotedAt: {self._yaml_value(state.get('promotedAt'))}\n\n")
             
             f.write("# Rebuild eligibility\n")
             f.write(f"rebuildEligibleAt:\n")
@@ -232,7 +240,10 @@ class CascadeGuardTool:
             if state.get('updateHistory'):
                 f.write("updateHistory:\n")
                 for entry in state['updateHistory']:
-                    f.write(f"  - {yaml.dump(entry, default_flow_style=True).strip()}\n")
+                    f.write(f"  - digest: {entry.get('digest', 'null')}\n")
+                    f.write(f"    publishedAt: {self._yaml_value(entry.get('publishedAt'))}\n")
+                    f.write(f"    observedAt: {self._yaml_value(entry.get('observedAt'))}\n")
+                    f.write(f"    promotedAt: {self._yaml_value(entry.get('promotedAt'))}\n")
             else:
                 f.write("updateHistory: []\n")
             
@@ -856,6 +867,18 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
     Docker-Content-Digest header value (e.g. 'sha256:abc…') or None when the
     registry is unreachable or the image/tag does not exist.
     """
+    info = _fetch_manifest_info(registry, repository, tag, token)
+    return info["digest"] if info else None
+
+
+def _fetch_manifest_info(
+    registry: str, repository: str, tag: str, token: Optional[str] = None
+) -> Optional[Dict[str, Optional[str]]]:
+    """Fetch digest and creation timestamp for a registry image.
+
+    Returns ``{"digest": "sha256:…", "publishedAt": "ISO-8601 or None"}``
+    or *None* when the registry is unreachable.
+    """
     ACCEPT = (
         "application/vnd.docker.distribution.manifest.v2+json,"
         "application/vnd.oci.image.manifest.v1+json,"
@@ -879,6 +902,33 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.headers.get("Docker-Content-Digest")
 
+    def _get_config_created(manifest_url: str, bearer: str, registry_base: str) -> Optional[str]:
+        """GET the manifest, then GET the config blob to extract 'created'."""
+        try:
+            req = urllib.request.Request(manifest_url)
+            req.add_header("Authorization", f"Bearer {bearer}")
+            req.add_header("Accept", ACCEPT)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                manifest = json.loads(resp.read())
+
+            # OCI / Docker v2 manifest → config descriptor
+            config_desc = manifest.get("config")
+            if not config_desc:
+                return None
+            config_digest = config_desc.get("digest")
+            if not config_digest:
+                return None
+
+            blob_url = f"{registry_base}/v2/{repository}/blobs/{config_digest}"
+            req2 = urllib.request.Request(blob_url)
+            req2.add_header("Authorization", f"Bearer {bearer}")
+            with urllib.request.urlopen(req2, timeout=10) as resp2:
+                config_blob = json.loads(resp2.read())
+
+            return config_blob.get("created")
+        except Exception:
+            return None
+
     try:
         if registry in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
             auth_url = (
@@ -887,7 +937,8 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
             )
             bearer = _get_token(auth_url)
             manifest_url = f"https://registry-1.docker.io/v2/{repository}/manifests/{tag}"
-            return _head_manifest(manifest_url, bearer)
+            registry_base = "https://registry-1.docker.io"
+            digest = _head_manifest(manifest_url, bearer)
 
         elif registry == "ghcr.io":
             ghcr_token = token or os.environ.get("GHCR_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -898,17 +949,26 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
             )
             bearer = _get_token(auth_url, creds)
             manifest_url = f"https://ghcr.io/v2/{repository}/manifests/{tag}"
-            return _head_manifest(manifest_url, bearer)
+            registry_base = "https://ghcr.io"
+            digest = _head_manifest(manifest_url, bearer)
 
         else:
-            # Generic registry v2 — attempt anonymous
             auth_url = (
                 f"https://{registry}/token"
                 f"?service={registry}&scope=repository:{repository}:pull"
             )
             bearer = _get_token(auth_url)
             manifest_url = f"https://{registry}/v2/{repository}/manifests/{tag}"
-            return _head_manifest(manifest_url, bearer)
+            registry_base = f"https://{registry}"
+            digest = _head_manifest(manifest_url, bearer)
+
+        if digest is None:
+            return None
+
+        # Fetch creation timestamp from config blob (best-effort)
+        published_at = _get_config_created(manifest_url, bearer, registry_base)
+
+        return {"digest": digest, "publishedAt": published_at}
 
     except Exception as exc:
         logger.warning(f"Could not query {registry}/{repository}:{tag}: {exc}")
@@ -1355,22 +1415,43 @@ def cmd_check(args) -> int:
                 results.append({"image": f"base:{name}", "status": "skipped", "reason": "no registry coordinates"})
                 continue
 
-            live_digest = _fetch_manifest_digest(registry, repository, tag)
-            if live_digest is None:
+            info = _fetch_manifest_info(registry, repository, tag)
+            if info is None:
                 results.append({"image": f"base:{name}", "status": "error", "reason": "registry unreachable"})
             elif recorded_digest is None:
-                results.append({"image": f"base:{name}", "status": "new", "live": live_digest})
-                # Record the digest — first observation, quarantine starts now
-                state["currentDigest"] = live_digest
-                state["lastUpdated"] = datetime.now(timezone.utc).isoformat()
+                # First observation
+                now_iso = datetime.now(timezone.utc).isoformat()
+                results.append({"image": f"base:{name}", "status": "new", "live": info["digest"]})
+                state["currentDigest"] = info["digest"]
+                state["publishedAt"] = info.get("publishedAt")
+                state["observedAt"] = now_iso
+                history = list(state.get("updateHistory") or [])
+                history.append({
+                    "digest": info["digest"],
+                    "publishedAt": info.get("publishedAt"),
+                    "observedAt": now_iso,
+                    "promotedAt": None,
+                })
+                state["updateHistory"] = history[-10:]
                 tool.write_base_image_state(state, state_file)
-            elif live_digest == recorded_digest:
+            elif info["digest"] == recorded_digest:
                 results.append({"image": f"base:{name}", "status": "ok", "digest": recorded_digest[:16]})
             else:
-                results.append({"image": f"base:{name}", "status": "drift", "recorded": recorded_digest[:16], "live": live_digest[:16]})
+                # Drift detected
+                now_iso = datetime.now(timezone.utc).isoformat()
+                results.append({"image": f"base:{name}", "status": "drift", "recorded": recorded_digest[:16], "live": info["digest"][:16]})
                 state["previousDigest"] = recorded_digest
-                state["currentDigest"] = live_digest
-                state["lastUpdated"] = datetime.now(timezone.utc).isoformat()
+                state["currentDigest"] = info["digest"]
+                state["publishedAt"] = info.get("publishedAt")
+                state["observedAt"] = now_iso
+                history = list(state.get("updateHistory") or [])
+                history.append({
+                    "digest": info["digest"],
+                    "publishedAt": info.get("publishedAt"),
+                    "observedAt": now_iso,
+                    "promotedAt": None,
+                })
+                state["updateHistory"] = history[-10:]
                 tool.write_base_image_state(state, state_file)
 
     # ── Phase 4: Check upstream tags (absorbed from check-upstream) ────────
@@ -1482,19 +1563,34 @@ def cmd_check(args) -> int:
                     continue
 
                 current_digest = bi_state.get("currentDigest")
-                last_updated_str = bi_state.get("lastUpdated")
-                if not current_digest or not last_updated_str:
+                promoted_digest = bi_state.get("promotedDigest")
+                if not current_digest:
                     continue
 
-                # Parse lastUpdated and check quarantine
+                # Already promoted this digest — nothing to do
+                if current_digest == promoted_digest:
+                    continue
+
+                # Determine quarantine start: prefer publishedAt (when
+                # upstream built it), fall back to observedAt (when we
+                # first saw it).
+                quarantine_start_str = (
+                    bi_state.get("publishedAt")
+                    or bi_state.get("observedAt")
+                    # Backwards compat with old state files
+                    or bi_state.get("lastUpdated")
+                )
+                if not quarantine_start_str:
+                    continue
+
                 try:
-                    last_updated = datetime.fromisoformat(last_updated_str)
-                    if last_updated.tzinfo is None:
-                        last_updated = last_updated.replace(tzinfo=timezone.utc)
+                    quarantine_start = datetime.fromisoformat(str(quarantine_start_str))
+                    if quarantine_start.tzinfo is None:
+                        quarantine_start = quarantine_start.replace(tzinfo=timezone.utc)
                 except (ValueError, TypeError):
                     continue
 
-                eligible_at = last_updated + timedelta(hours=q_hours)
+                eligible_at = quarantine_start + timedelta(hours=q_hours)
                 if now_dt < eligible_at:
                     remaining = eligible_at - now_dt
                     hours_left = remaining.total_seconds() / 3600
@@ -1524,6 +1620,18 @@ def cmd_check(args) -> int:
                         f"  ✓ {img_name}: promoted {bi_name} → {current_digest[:16]}… (quarantine: {q_hours}h)",
                         file=sys.stderr,
                     )
+
+                    # Update state: record promotion
+                    bi_state["promotedDigest"] = current_digest
+                    bi_state["promotedAt"] = now_dt.isoformat()
+                    # Update history entry
+                    history = list(bi_state.get("updateHistory") or [])
+                    for entry in history:
+                        if entry.get("digest") == current_digest and not entry.get("promotedAt"):
+                            entry["promotedAt"] = now_dt.isoformat()
+                    bi_state["updateHistory"] = history
+                    bi_state_file = base_images_dir / f"{bi_name}.yaml"
+                    tool.write_base_image_state(bi_state, bi_state_file)
 
     # ── Phase 6: Create PRs if requested (one per base image) ────────────
     pr_urls: List[str] = []
