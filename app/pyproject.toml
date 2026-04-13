@@ -1,6 +1,6 @@
 [project]
 name = "cascadeguard"
-version = "0.1.0"
+version = "0.1.1"
 description = "Guardian of the container cascade — event-driven image lifecycle management"
 requires-python = ">=3.11"
 readme = "README.md"
