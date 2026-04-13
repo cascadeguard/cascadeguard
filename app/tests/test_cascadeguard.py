@@ -54,7 +54,7 @@ def _args(**kwargs):
         image=None,
         format="table",
         promote=False,
-        create_pr=False,
+        no_commit=True,
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
