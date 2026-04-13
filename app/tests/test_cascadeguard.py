@@ -53,6 +53,8 @@ def _args(**kwargs):
         auto_rebuild=False,
         image=None,
         format="table",
+        promote=False,
+        create_pr=False,
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -339,7 +341,7 @@ class TestCmdCheck:
             [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
             {"images/myapp/Dockerfile": "FROM node:22-slim\nRUN echo hello\n"})
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_A, "publishedAt": None}):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 0
         # Should have created base-images/node-22-slim.yaml
@@ -355,7 +357,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_A, "publishedAt": None}):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 0
 
@@ -367,7 +369,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_B, "publishedAt": None}):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 1
 
@@ -377,7 +379,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_B, "publishedAt": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         out = capsys.readouterr().out
         assert "DRIFT" in out
@@ -388,7 +390,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_A, "publishedAt": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         out = capsys.readouterr().out
         assert "node-22" in out
@@ -401,7 +403,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_B):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_B, "publishedAt": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, format="json"))
         data = json.loads(capsys.readouterr().out)
         assert any(d["status"] == "drift" for d in data)
@@ -412,7 +414,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22", digest=DIGEST_A)
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_A, "publishedAt": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, format="json"))
         data = json.loads(capsys.readouterr().out)
         assert data[0]["status"] == "ok"
@@ -425,7 +427,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22")
 
-        with patch("app._fetch_manifest_digest", return_value=None):
+        with patch("app._fetch_manifest_info", return_value=None):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         assert rc == 0
 
@@ -435,7 +437,7 @@ class TestCmdCheck:
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
         self._pre_seed_base_image(state_dir, "node-22")
 
-        with patch("app._fetch_manifest_digest", return_value=None):
+        with patch("app._fetch_manifest_info", return_value=None):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         out = capsys.readouterr().out
         assert "error" in out or "unreachable" in out
@@ -451,7 +453,7 @@ class TestCmdCheck:
             "images/other/Dockerfile": "FROM alpine:3.20\nRUN echo hello\n",
         })
 
-        with patch("app._fetch_manifest_digest", return_value=DIGEST_A):
+        with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_A, "publishedAt": None}):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir, image="myapp"))
         assert rc == 0
         # Only myapp's base image should be discovered, not other's
@@ -463,7 +465,7 @@ class TestCmdCheck:
         images_yaml, state_dir = self._setup_repo(tmp_path,
             [{"name": "memcached", "enabled": False}])
 
-        with patch("app._fetch_manifest_digest") as mock_fetch:
+        with patch("app._fetch_manifest_info") as mock_fetch:
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
         mock_fetch.assert_not_called()
         assert rc == 0
