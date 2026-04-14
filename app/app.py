@@ -1353,17 +1353,22 @@ def _create_promotion_pr(
 
         _run_git(repo_root, ["commit", "-m", commit_msg])
 
-        # Build PR body
+        # Build PR body with actual dates from state
+        published_at = entries[0].get("published_at") or "unknown"
+        observed_at = entries[0].get("observed_at") or "unknown"
+        promoted_at = entries[0].get("promoted_at") or "unknown"
+
         pr_body_lines = [
             f"## Upstream Promotion — `{base_image}`\n",
             f"Bumps the `{base_image}` base image to digest "
             f"`{new_digest[:24]}…`\n",
             "### Quarantine\n",
-            f"| Rule | Value |",
-            f"|------|-------|",
+            f"| | |",
+            f"|---|---|",
             f"| Quarantine period | **{q_hours}h** |",
-            f"| Drift detected | state file `lastUpdated` |",
-            f"| Eligible at | `lastUpdated + {q_hours}h` ✓ |",
+            f"| Published upstream | `{published_at}` |",
+            f"| Observed by CascadeGuard | `{observed_at}` |",
+            f"| Quarantine passed | `{promoted_at}` |",
             "",
             "### Affected images\n",
             "| Image | Dockerfile |",
@@ -1377,8 +1382,7 @@ def _create_promotion_pr(
             "affected image(s) only."
         )
         pr_body_lines.append(
-            "> Created automatically by `cascadeguard images check "
-            "--promote --create-pr`."
+            "> Created automatically by `cascadeguard images check`."
         )
         pr_body = "\n".join(pr_body_lines)
 
@@ -1407,6 +1411,8 @@ def _create_promotion_pr(
                     "--body", pr_body,
                     "--base", "main",
                     "--head", branch,
+                    "--label", "cascadeguard",
+                    "--label", "promotion",
                 ],
                 cwd=repo_root,
                 capture_output=True,
@@ -1708,6 +1714,11 @@ def cmd_check(args) -> int:
         if image_filter and name != image_filter:
             continue
 
+        # Only check Docker Hub tags for Docker Hub images
+        registry = image.get("registry", "")
+        if registry and registry not in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
+            continue
+
         img_name = image.get("image", name)
         namespace = image.get("namespace", "library")
         current_tags: Set[str] = set(image.get("latest_stable_tags", []))
@@ -1933,6 +1944,9 @@ def cmd_check(args) -> int:
                         "new_digest": promoted_digest,
                         "quarantine_hours": q_hours,
                         "full_ref": full_ref,
+                        "published_at": bi_state.get("publishedAt"),
+                        "observed_at": bi_state.get("observedAt"),
+                        "promoted_at": bi_state.get("promotedAt"),
                     })
 
     # ── Phase 8: Deliver Dockerfile changes ────────────────────────────────
