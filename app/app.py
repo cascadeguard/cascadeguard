@@ -236,6 +236,22 @@ class CascadeGuardTool:
                 f.write("metadata: {}\n")
             f.write("\n")
             
+            f.write("# Available platforms\n")
+            platforms = state.get('platforms', [])
+            if platforms:
+                f.write("platforms:\n")
+                for plat in platforms:
+                    os_name = plat.get('os', 'unknown')
+                    arch = plat.get('architecture', 'unknown')
+                    variant = plat.get('variant', '')
+                    label = f"{os_name}/{arch}"
+                    if variant:
+                        label += f"/{variant}"
+                    f.write(f"  - {label}\n")
+            else:
+                f.write("platforms: []\n")
+            f.write("\n")
+
             f.write("# Update history (last 10 digest changes)\n")
             if state.get('updateHistory'):
                 f.write("updateHistory:\n")
@@ -880,6 +896,34 @@ def _fetch_manifest_digest(registry: str, repository: str, tag: str, token: Opti
     return info["digest"] if info else None
 
 
+def _fetch_blob_json(url: str, bearer: str) -> Optional[Dict]:
+    """Fetch a registry blob as JSON, handling CDN redirects.
+
+    Docker Hub redirects blob requests to a CDN. The CDN rejects the
+    Authorization header, so we intercept the redirect and follow it
+    without auth.
+    """
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None  # Don't follow — we'll do it manually
+
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {bearer}")
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 307):
+            redir_url = e.headers.get("Location")
+            if redir_url:
+                with urllib.request.urlopen(redir_url, timeout=10) as resp:
+                    return json.loads(resp.read())
+        return None
+    except Exception:
+        return None
+
+
 def _fetch_manifest_info(
     registry: str, repository: str, tag: str, token: Optional[str] = None
 ) -> Optional[Dict[str, Optional[str]]]:
@@ -911,8 +955,16 @@ def _fetch_manifest_info(
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.headers.get("Docker-Content-Digest")
 
-    def _get_config_created(manifest_url: str, bearer: str, registry_base: str) -> Optional[str]:
-        """GET the manifest, then GET the config blob to extract 'created'."""
+    def _get_manifest_metadata(manifest_url: str, bearer: str, registry_base: str) -> Dict:
+        """GET the manifest and extract created timestamp and platform list.
+
+        Handles both single manifests and manifest lists (multi-arch).
+        For manifest lists, follows the first linux/amd64 entry for the
+        created timestamp and collects all platforms.
+
+        Returns {"publishedAt": str|None, "platforms": list[dict]}.
+        """
+        result: Dict = {"publishedAt": None, "platforms": []}
         try:
             req = urllib.request.Request(manifest_url)
             req.add_header("Authorization", f"Bearer {bearer}")
@@ -920,23 +972,46 @@ def _fetch_manifest_info(
             with urllib.request.urlopen(req, timeout=10) as resp:
                 manifest = json.loads(resp.read())
 
-            # OCI / Docker v2 manifest → config descriptor
+            # If this is a manifest list/index, collect platforms and follow amd64
+            if "manifests" in manifest and not manifest.get("config"):
+                result["platforms"] = [
+                    m.get("platform", {}) for m in manifest["manifests"]
+                    if m.get("platform")
+                ]
+
+                platform_digest = None
+                for m in manifest["manifests"]:
+                    plat = m.get("platform", {})
+                    if plat.get("os") == "linux" and plat.get("architecture") == "amd64":
+                        platform_digest = m["digest"]
+                        break
+                if not platform_digest and manifest["manifests"]:
+                    platform_digest = manifest["manifests"][0]["digest"]
+                if not platform_digest:
+                    return result
+
+                plat_url = f"{registry_base}/v2/{repository}/manifests/{platform_digest}"
+                req_plat = urllib.request.Request(plat_url)
+                req_plat.add_header("Authorization", f"Bearer {bearer}")
+                req_plat.add_header("Accept", ACCEPT)
+                with urllib.request.urlopen(req_plat, timeout=10) as resp_plat:
+                    manifest = json.loads(resp_plat.read())
+
             config_desc = manifest.get("config")
             if not config_desc:
-                return None
+                return result
             config_digest = config_desc.get("digest")
             if not config_digest:
-                return None
+                return result
 
-            blob_url = f"{registry_base}/v2/{repository}/blobs/{config_digest}"
-            req2 = urllib.request.Request(blob_url)
-            req2.add_header("Authorization", f"Bearer {bearer}")
-            with urllib.request.urlopen(req2, timeout=10) as resp2:
-                config_blob = json.loads(resp2.read())
+            config_blob = _fetch_blob_json(
+                f"{registry_base}/v2/{repository}/blobs/{config_digest}", bearer
+            )
 
-            return config_blob.get("created")
+            result["publishedAt"] = config_blob.get("created") if config_blob else None
+            return result
         except Exception:
-            return None
+            return result
 
     try:
         if registry in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
@@ -974,10 +1049,14 @@ def _fetch_manifest_info(
         if digest is None:
             return None
 
-        # Fetch creation timestamp from config blob (best-effort)
-        published_at = _get_config_created(manifest_url, bearer, registry_base)
+        # Fetch metadata: creation timestamp and platform list (best-effort)
+        metadata = _get_manifest_metadata(manifest_url, bearer, registry_base)
 
-        return {"digest": digest, "publishedAt": published_at}
+        return {
+            "digest": digest,
+            "publishedAt": metadata.get("publishedAt"),
+            "platforms": metadata.get("platforms", []),
+        }
 
     except Exception as exc:
         logger.warning(f"Could not query {registry}/{repository}:{tag}: {exc}")
@@ -1543,6 +1622,7 @@ def cmd_check(args) -> int:
                 state["currentDigest"] = info["digest"]
                 state["publishedAt"] = info.get("publishedAt")
                 state["observedAt"] = now_iso
+                state["platforms"] = info.get("platforms", [])
                 history = list(state.get("updateHistory") or [])
                 history.append({
                     "digest": info["digest"],
@@ -1562,6 +1642,7 @@ def cmd_check(args) -> int:
                 state["currentDigest"] = info["digest"]
                 state["publishedAt"] = info.get("publishedAt")
                 state["observedAt"] = now_iso
+                state["platforms"] = info.get("platforms", [])
                 history = list(state.get("updateHistory") or [])
                 history.append({
                     "digest": info["digest"],

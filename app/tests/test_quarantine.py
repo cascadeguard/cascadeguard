@@ -294,3 +294,161 @@ class TestResolveCheckConfig:
         assert result["state"]["destination"] == "pr"
         assert result["promote"]["enabled"] is True
         assert result["promote"]["destination"] == "main"
+
+
+# ── _fetch_manifest_info (manifest list handling) ──────────────────────────
+
+from unittest.mock import patch, MagicMock
+from app import _fetch_manifest_info, _fetch_blob_json
+import json
+import urllib.error
+
+
+def _mock_urlopen_sequence(responses):
+    """Build a side_effect for urllib.request.urlopen.
+
+    Each entry is (body_dict, headers_dict, status).
+    Only covers token, HEAD manifest, and GET manifest calls.
+    Blob fetches go through _fetch_blob_json (mocked separately).
+    """
+    calls = iter(responses)
+
+    def _urlopen(req_or_url, timeout=10):
+        body, headers, status = next(calls)
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(body).encode() if body else b""
+        resp.headers = headers or {}
+        resp.status = status
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    return _urlopen
+
+
+class TestFetchManifestInfoManifestList:
+    """_fetch_manifest_info follows manifest lists to get publishedAt."""
+
+    def test_single_manifest_returns_created(self):
+        responses = [
+            # Token
+            ({"token": "tok"}, {}, 200),
+            # HEAD manifest
+            (None, {"Docker-Content-Digest": "sha256:abc"}, 200),
+            # GET manifest → single manifest with config
+            ({"config": {"digest": "sha256:cfg"}}, {}, 200),
+        ]
+        with patch("urllib.request.urlopen", side_effect=_mock_urlopen_sequence(responses)):
+            with patch("app._fetch_blob_json", return_value={"created": "2026-03-20T10:00:00Z"}):
+                result = _fetch_manifest_info("docker.io", "library/test", "latest")
+
+        assert result["digest"] == "sha256:abc"
+        assert result["publishedAt"] == "2026-03-20T10:00:00Z"
+
+    def test_manifest_list_follows_amd64(self):
+        responses = [
+            ({"token": "tok"}, {}, 200),
+            (None, {"Docker-Content-Digest": "sha256:idx"}, 200),
+            # GET manifest → manifest list
+            ({"manifests": [
+                {"digest": "sha256:arm", "platform": {"os": "linux", "architecture": "arm64"}},
+                {"digest": "sha256:amd", "platform": {"os": "linux", "architecture": "amd64"}},
+            ]}, {}, 200),
+            # GET amd64 manifest
+            ({"config": {"digest": "sha256:cfg"}}, {}, 200),
+        ]
+        with patch("urllib.request.urlopen", side_effect=_mock_urlopen_sequence(responses)):
+            with patch("app._fetch_blob_json", return_value={"created": "2026-03-24T23:11:15Z"}):
+                result = _fetch_manifest_info("docker.io", "library/nginx", "stable")
+
+        assert result["digest"] == "sha256:idx"
+        assert result["publishedAt"] == "2026-03-24T23:11:15Z"
+
+    def test_manifest_list_no_amd64_uses_first(self):
+        responses = [
+            ({"token": "tok"}, {}, 200),
+            (None, {"Docker-Content-Digest": "sha256:idx"}, 200),
+            ({"manifests": [
+                {"digest": "sha256:arm", "platform": {"os": "linux", "architecture": "arm64"}},
+            ]}, {}, 200),
+            ({"config": {"digest": "sha256:cfg"}}, {}, 200),
+        ]
+        with patch("urllib.request.urlopen", side_effect=_mock_urlopen_sequence(responses)):
+            with patch("app._fetch_blob_json", return_value={"created": "2026-03-25T00:00:00Z"}):
+                result = _fetch_manifest_info("docker.io", "library/test", "latest")
+
+        assert result["publishedAt"] == "2026-03-25T00:00:00Z"
+
+    def test_network_error_returns_none(self):
+        with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+            result = _fetch_manifest_info("docker.io", "library/test", "latest")
+        assert result is None
+
+    def test_no_digest_returns_none(self):
+        responses = [
+            ({"token": "tok"}, {}, 200),
+            (None, {}, 200),
+        ]
+        with patch("urllib.request.urlopen", side_effect=_mock_urlopen_sequence(responses)):
+            result = _fetch_manifest_info("docker.io", "library/test", "latest")
+        assert result is None
+
+    def test_blob_failure_returns_digest_without_publishedat(self):
+        responses = [
+            ({"token": "tok"}, {}, 200),
+            (None, {"Docker-Content-Digest": "sha256:abc"}, 200),
+            ({"config": {"digest": "sha256:cfg"}}, {}, 200),
+        ]
+        with patch("urllib.request.urlopen", side_effect=_mock_urlopen_sequence(responses)):
+            with patch("app._fetch_blob_json", return_value=None):
+                result = _fetch_manifest_info("docker.io", "library/test", "latest")
+
+        assert result["digest"] == "sha256:abc"
+        assert result["publishedAt"] is None
+
+
+class TestFetchBlobJson:
+    """_fetch_blob_json handles CDN redirects."""
+
+    def test_direct_response(self):
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"created": "2026-01-01"}).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+
+        opener = MagicMock()
+        opener.open.return_value = resp
+
+        with patch("urllib.request.build_opener", return_value=opener):
+            result = _fetch_blob_json("https://reg/v2/lib/test/blobs/sha256:abc", "tok")
+
+        assert result == {"created": "2026-01-01"}
+
+    def test_redirect_followed_without_auth(self):
+        err = urllib.error.HTTPError(
+            url="", code=302, msg="Found", hdrs=MagicMock(), fp=MagicMock()
+        )
+        err.headers = {"Location": "https://cdn.example.com/blob"}
+
+        opener = MagicMock()
+        opener.open.side_effect = err
+
+        cdn_resp = MagicMock()
+        cdn_resp.read.return_value = json.dumps({"created": "2026-03-24"}).encode()
+        cdn_resp.__enter__ = lambda s: s
+        cdn_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.build_opener", return_value=opener):
+            with patch("urllib.request.urlopen", return_value=cdn_resp):
+                result = _fetch_blob_json("https://reg/v2/lib/test/blobs/sha256:abc", "tok")
+
+        assert result == {"created": "2026-03-24"}
+
+    def test_error_returns_none(self):
+        opener = MagicMock()
+        opener.open.side_effect = Exception("fail")
+
+        with patch("urllib.request.build_opener", return_value=opener):
+            result = _fetch_blob_json("https://reg/v2/lib/test/blobs/sha256:abc", "tok")
+
+        assert result is None
