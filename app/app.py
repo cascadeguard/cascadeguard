@@ -1634,6 +1634,16 @@ def cmd_check(args) -> int:
                 tool.write_base_image_state(state, state_file)
             elif info["digest"] == recorded_digest:
                 results.append({"image": f"base:{name}", "status": "ok", "digest": recorded_digest[:16]})
+                # Backfill publishedAt/platforms if missing from older state files
+                updated = False
+                if not state.get("publishedAt") and info.get("publishedAt"):
+                    state["publishedAt"] = info["publishedAt"]
+                    updated = True
+                if not state.get("platforms") and info.get("platforms"):
+                    state["platforms"] = info["platforms"]
+                    updated = True
+                if updated:
+                    tool.write_base_image_state(state, state_file)
             else:
                 # Drift detected
                 now_iso = datetime.now(timezone.utc).isoformat()
