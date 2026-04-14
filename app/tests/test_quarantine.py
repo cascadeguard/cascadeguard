@@ -452,3 +452,186 @@ class TestFetchBlobJson:
             result = _fetch_blob_json("https://reg/v2/lib/test/blobs/sha256:abc", "tok")
 
         assert result is None
+
+
+# ── Docker Hub auth + namespace resolution ─────────────────────────────────
+
+from app import _get_dockerhub_token, _get_dockerhub_tags
+import base64
+import os
+import yaml
+from types import SimpleNamespace
+
+
+class TestGetDockerHubToken:
+    def test_returns_none_without_env_vars(self):
+        with patch.dict("os.environ", {}, clear=True):
+            assert _get_dockerhub_token() is None
+
+    def test_returns_none_with_partial_env(self):
+        with patch.dict("os.environ", {"DOCKERHUB_USERNAME": "user"}, clear=True):
+            assert _get_dockerhub_token() is None
+
+    def test_returns_basic_auth_with_credentials(self):
+        with patch.dict("os.environ", {
+            "DOCKERHUB_USERNAME": "myuser",
+            "DOCKERHUB_TOKEN": "mytoken",
+        }, clear=True):
+            result = _get_dockerhub_token()
+            assert result is not None
+            assert result.startswith("Basic ")
+            decoded = base64.b64decode(result.split(" ")[1]).decode()
+            assert decoded == "myuser:mytoken"
+
+
+class TestGetDockerHubTagsAuth:
+    def test_unauthenticated_request(self):
+        """Without credentials, no Authorization header is sent."""
+        calls = []
+
+        def mock_urlopen(req, timeout=10):
+            calls.append(req)
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({"results": [], "next": ""}).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                _get_dockerhub_tags("library", "nginx")
+
+        assert len(calls) == 1
+        assert calls[0].get_header("Authorization") is None
+
+    def test_authenticated_request(self):
+        """With credentials, Authorization header is sent."""
+        calls = []
+
+        def mock_urlopen(req, timeout=10):
+            calls.append(req)
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({"results": [], "next": ""}).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch.dict("os.environ", {
+            "DOCKERHUB_USERNAME": "user",
+            "DOCKERHUB_TOKEN": "tok",
+        }):
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                _get_dockerhub_tags("library", "nginx")
+
+        assert len(calls) == 1
+        assert calls[0].get_header("Authorization") is not None
+        assert calls[0].get_header("Authorization").startswith("Basic ")
+
+
+class TestNamespaceResolution:
+    """Phase 4 uses full_name when available."""
+
+    def test_full_name_used_over_namespace_image(self, tmp_path):
+        """full_name: bitnami/postgresql should query bitnami/postgresql,
+        not bitnami/bitnami-postgresql."""
+        from app import cmd_check
+
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump([{
+            "name": "bitnami-postgresql",
+            "image": "bitnami-postgresql",
+            "tag": "16",
+            "namespace": "bitnami",
+            "full_name": "bitnami/postgresql",
+        }]))
+        state_dir = tmp_path / ".cascadeguard"
+        state_dir.mkdir()
+
+        tag_calls = []
+        original_get_tags = _get_dockerhub_tags.__wrapped__ if hasattr(_get_dockerhub_tags, '__wrapped__') else None
+
+        def mock_get_tags(namespace, image):
+            tag_calls.append((namespace, image))
+            return []
+
+        args = SimpleNamespace(
+            images_yaml=str(images_yaml),
+            state_dir=str(state_dir),
+            image=None, format="table",
+            promote=False, no_commit=True,
+        )
+
+        with patch("app._fetch_manifest_info", return_value=None):
+            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+                cmd_check(args)
+
+        assert len(tag_calls) == 1
+        assert tag_calls[0] == ("bitnami", "postgresql")
+
+    def test_falls_back_to_namespace_image(self, tmp_path):
+        """Without full_name, uses namespace/image."""
+        from app import cmd_check
+
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump([{
+            "name": "nginx",
+            "image": "nginx",
+            "tag": "stable",
+            "namespace": "library",
+        }]))
+        state_dir = tmp_path / ".cascadeguard"
+        state_dir.mkdir()
+
+        tag_calls = []
+
+        def mock_get_tags(namespace, image):
+            tag_calls.append((namespace, image))
+            return []
+
+        args = SimpleNamespace(
+            images_yaml=str(images_yaml),
+            state_dir=str(state_dir),
+            image=None, format="table",
+            promote=False, no_commit=True,
+        )
+
+        with patch("app._fetch_manifest_info", return_value=None):
+            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+                cmd_check(args)
+
+        assert len(tag_calls) == 1
+        assert tag_calls[0] == ("library", "nginx")
+
+    def test_skips_non_dockerhub_registry(self, tmp_path):
+        """Images with ghcr.io registry skip tag checking."""
+        from app import cmd_check
+
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump([{
+            "name": "myapp",
+            "image": "myapp",
+            "tag": "latest",
+            "registry": "ghcr.io/cascadeguard",
+            "source": {"dockerfile": "images/myapp/Dockerfile"},
+        }]))
+        state_dir = tmp_path / ".cascadeguard"
+        state_dir.mkdir()
+
+        tag_calls = []
+
+        def mock_get_tags(namespace, image):
+            tag_calls.append((namespace, image))
+            return []
+
+        args = SimpleNamespace(
+            images_yaml=str(images_yaml),
+            state_dir=str(state_dir),
+            image=None, format="table",
+            promote=False, no_commit=True,
+        )
+
+        with patch("app._fetch_manifest_info", return_value=None):
+            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+                cmd_check(args)
+
+        assert len(tag_calls) == 0

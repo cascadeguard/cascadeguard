@@ -1073,14 +1073,33 @@ _DOCKER_HUB_TAGS_URL = (
 )
 
 
+def _get_dockerhub_token() -> Optional[str]:
+    """Get Docker Hub auth header value.
+
+    Uses DOCKERHUB_USERNAME + DOCKERHUB_TOKEN env vars.
+    The PAT can be used directly as HTTP Basic Auth.
+    Returns a Basic auth header value, or None if no credentials.
+    """
+    username = os.environ.get("DOCKERHUB_USERNAME", "")
+    token = os.environ.get("DOCKERHUB_TOKEN", "")
+    if not username or not token:
+        return None
+    import base64
+    credentials = base64.b64encode(f"{username}:{token}".encode()).decode()
+    return f"Basic {credentials}"
+
+
 def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:
     """Fetch all tags for a Docker Hub image, paginating up to 10 pages."""
     url: Optional[str] = _DOCKER_HUB_TAGS_URL.format(namespace=namespace, image=image)
     tags: List[str] = []
     page = 0
+    hub_auth = _get_dockerhub_token()
     try:
         while url and page < 10:
             req = urllib.request.Request(url)
+            if hub_auth:
+                req.add_header("Authorization", hub_auth)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
             tags.extend(t["name"] for t in data.get("results", []))
@@ -1721,9 +1740,19 @@ def cmd_check(args) -> int:
 
         img_name = image.get("image", name)
         namespace = image.get("namespace", "library")
+
+        # Use full_name if available (e.g. "bitnami/postgresql"),
+        # otherwise construct from namespace/image
+        full_name = image.get("full_name", "")
+        if full_name and "/" in full_name:
+            tag_namespace, tag_image = full_name.split("/", 1)
+        else:
+            tag_namespace = namespace
+            tag_image = img_name
+
         current_tags: Set[str] = set(image.get("latest_stable_tags", []))
 
-        upstream_tags = _get_dockerhub_tags(namespace, img_name)
+        upstream_tags = _get_dockerhub_tags(tag_namespace, tag_image)
         stable_upstream = {t for t in upstream_tags if _is_stable_tag(t)}
 
         new_tags = stable_upstream - current_tags
