@@ -516,3 +516,61 @@ class TestPromoteDestinationMain:
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
         assert f"FROM node:22@{DIGEST_NEW}" in content
+
+
+class TestStateFileRoundtrip:
+    """State files with platforms survive write → read → write."""
+
+    def test_platforms_roundtrip_after_promotion(self, tmp_path):
+        """Promotion writes state with platforms, then re-reading and
+        writing again should not crash."""
+        images_yaml, state_dir = _setup_repo(tmp_path, [_MYAPP], _MYAPP_DF)
+        long_ago = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+
+        # Pre-seed with platforms (as dicts, like the registry returns)
+        base_dir = Path(state_dir) / "base-images"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        state = {
+            "name": "node-22",
+            "fullImage": "node:22",
+            "registry": "docker.io",
+            "repository": "library/node",
+            "tag": "22",
+            "currentDigest": DIGEST_NEW,
+            "publishedAt": long_ago,
+            "observedAt": long_ago,
+            "previousDigest": None,
+            "promotedDigest": None,
+            "promotedAt": None,
+            "lastChecked": "2025-01-01T00:00:00+00:00",
+            "allowTags": "^22$",
+            "imageSelectionStrategy": "Lexical",
+            "repoURL": "docker.io/library/node",
+            "firstDiscovered": "2025-01-01T00:00:00+00:00",
+            "rebuildEligibleAt": {"default": None},
+            "metadata": {},
+            "platforms": [
+                {"os": "linux", "architecture": "amd64"},
+                {"os": "linux", "architecture": "arm64"},
+                {"os": "linux", "architecture": "arm", "variant": "v7"},
+            ],
+            "updateHistory": [],
+            "lastDiscovery": None,
+        }
+        (base_dir / "node-22.yaml").write_text(
+            yaml.dump(state, default_flow_style=False)
+        )
+        _seed_image_state(state_dir, "myapp", ["node-22"],
+                          dockerfile="images/myapp/Dockerfile")
+
+        with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
+            with patch("app._get_dockerhub_tags", return_value=[]):
+                cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        # Verify the state file was written successfully (no crash)
+        bi_state = yaml.safe_load((base_dir / "node-22.yaml").read_text())
+        assert bi_state["promotedDigest"] == DIGEST_NEW
+        # Platforms should survive the roundtrip
+        assert len(bi_state["platforms"]) == 3
+        assert bi_state["platforms"][0]["os"] == "linux"
+        assert bi_state["platforms"][0]["architecture"] == "amd64"
