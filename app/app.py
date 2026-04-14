@@ -1287,15 +1287,34 @@ def _create_promotion_pr(
 
     scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     pr_urls: List[str] = []
+    pr_errors: List[str] = []
 
     for base_image, entries in by_base.items():
-        branch = f"cascadeguard/promote-{base_image}-{scan_date}"
         new_digest = entries[0]["new_digest"]
+        digest_short = new_digest.replace("sha256:", "")[:12]
+        branch = f"cascadeguard/promote-{base_image}"
         q_hours = quarantine_hours.get(base_image, _DEFAULT_QUARANTINE_HOURS)
         image_names = [e["image"] for e in entries]
 
-        # Create branch from main
-        _run_git(repo_root, ["checkout", "-B", branch, "main"])
+        # Check for existing open PR on this branch
+        existing_pr = None
+        if shutil.which("gh"):
+            check_result = subprocess.run(
+                ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,title", "--jq", ".[0].number"],
+                cwd=repo_root, capture_output=True, text=True,
+            )
+            if check_result.returncode == 0 and check_result.stdout.strip():
+                existing_pr = check_result.stdout.strip()
+
+        # Create or update branch
+        if existing_pr:
+            # Branch exists with open PR — checkout and add new commit
+            _run_git(repo_root, ["fetch", "origin", branch])
+            _run_git(repo_root, ["checkout", branch])
+            _run_git(repo_root, ["reset", "--hard", f"origin/{branch}"])
+        else:
+            # New branch from main
+            _run_git(repo_root, ["checkout", "-B", branch, "main"])
 
         # Re-apply the Dockerfile changes on this clean branch
         for e in entries:
@@ -1333,7 +1352,6 @@ def _create_promotion_pr(
         commit_msg = f"{commit_title}\n\n" + "\n".join(commit_body_lines)
 
         _run_git(repo_root, ["commit", "-m", commit_msg])
-        _run_git(repo_root, ["push", "-u", "origin", branch, "--force"])
 
         # Build PR body
         pr_body_lines = [
@@ -1364,31 +1382,50 @@ def _create_promotion_pr(
         )
         pr_body = "\n".join(pr_body_lines)
 
-        result = subprocess.run(
-            [
-                "gh", "pr", "create",
-                "--title", commit_title,
-                "--body", pr_body,
-                "--base", "main",
-                "--head", branch,
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print(
-                f"  Warning: PR for {base_image} failed: {result.stderr.strip()}",
-                file=sys.stderr,
+        if existing_pr:
+            # Update existing PR — push new commit and add comment
+            _run_git(repo_root, ["push", "origin", branch])
+            comment = (
+                f"⬆️ **Superseded** — upstream published a new digest.\n\n"
+                f"Updated to `{new_digest[:24]}…`\n"
+                f"Quarantine: {q_hours}h ✓"
             )
+            subprocess.run(
+                ["gh", "pr", "comment", existing_pr, "--body", comment],
+                cwd=repo_root, capture_output=True, text=True,
+            )
+            pr_urls.append(f"#{existing_pr} (updated)")
+            print(f"  PR #{existing_pr} updated for {base_image}: {new_digest[:16]}…", file=sys.stderr)
         else:
-            pr_url = result.stdout.strip()
-            pr_urls.append(pr_url)
-            print(f"  PR created for {base_image}: {pr_url}", file=sys.stderr)
+            # Create new PR
+            _run_git(repo_root, ["push", "-u", "origin", branch])
+
+            result = subprocess.run(
+                [
+                    "gh", "pr", "create",
+                    "--title", commit_title,
+                    "--body", pr_body,
+                    "--base", "main",
+                    "--head", branch,
+                ],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                pr_errors.append(f"{base_image}: {result.stderr.strip()}")
+                print(
+                    f"  ✗ PR for {base_image} failed: {result.stderr.strip()}",
+                    file=sys.stderr,
+                )
+            else:
+                pr_url = result.stdout.strip()
+                pr_urls.append(pr_url)
+                print(f"  PR created for {base_image}: {pr_url}", file=sys.stderr)
 
         _run_git(repo_root, ["checkout", "main"])
 
-    return pr_urls
+    return pr_urls, pr_errors
 
 
 def _run_git(cwd: Path, args: List[str]):
@@ -1809,31 +1846,10 @@ def cmd_check(args) -> int:
                     )
                     continue
 
-                # Quarantine passed — update the Dockerfile
-                full_ref = all_base_image_refs.get(bi_name, bi_state.get("fullImage", ""))
-                if not full_ref:
-                    continue
-
-                modified = _update_dockerfile_digest(dockerfile_path, full_ref, current_digest)
-                if modified:
-                    quarantine_hours_map[bi_name] = q_hours
-                    promoted.append({
-                        "image": img_name,
-                        "base_image": bi_name,
-                        "dockerfile": dockerfile_rel,
-                        "new_digest": current_digest,
-                        "quarantine_hours": q_hours,
-                        "full_ref": full_ref,
-                    })
-                    print(
-                        f"  ✓ {img_name}: promoted {bi_name} → {current_digest[:16]}… (quarantine: {q_hours}h)",
-                        file=sys.stderr,
-                    )
-
-                    # Update state: record promotion
+                # Quarantine passed — record promotedDigest in state
+                if current_digest != promoted_digest:
                     bi_state["promotedDigest"] = current_digest
                     bi_state["promotedAt"] = now_dt.isoformat()
-                    # Update history entry
                     history = list(bi_state.get("updateHistory") or [])
                     for entry in history:
                         if entry.get("digest") == current_digest and not entry.get("promotedAt"):
@@ -1841,6 +1857,10 @@ def cmd_check(args) -> int:
                     bi_state["updateHistory"] = history
                     bi_state_file = base_images_dir / f"{bi_name}.yaml"
                     tool.write_base_image_state(bi_state, bi_state_file)
+                    print(
+                        f"  ✓ {img_name}: {bi_name} passed quarantine ({q_hours}h) — eligible for promotion",
+                        file=sys.stderr,
+                    )
 
     # ── Phase 6: Commit state changes ─────────────────────────────────────
     if state_destination != "none":
@@ -1849,19 +1869,84 @@ def cmd_check(args) -> int:
         except Exception as exc:
             print(f"  Warning: state commit failed: {exc}", file=sys.stderr)
 
-    # ── Phase 7: Create PRs for promotions (one per base image) ───────────
+    # ── Phase 7: Reconcile Dockerfiles with promoted state ─────────────────
+    # Compare promotedDigest in state against what's in each Dockerfile.
+    # If they differ and no open PR exists, modify the Dockerfile and open a PR.
+    promoted: List[Dict] = []
+    quarantine_hours_map: Dict[str, int] = {}
+
+    if do_promote:
+        # Re-read state files (they may have been updated in Phase 5)
+        base_image_states_fresh: Dict[str, Dict] = {}
+        if base_images_dir.exists():
+            for state_file in sorted(base_images_dir.glob("*.yaml")):
+                with open(state_file) as f:
+                    st = yaml.safe_load(f) or {}
+                base_image_states_fresh[st.get("name", state_file.stem)] = st
+
+        for image in resolved_images:
+            img_name = image.get("name")
+            if not img_name or not image.get("enabled", True):
+                continue
+            if image_filter and img_name != image_filter:
+                continue
+            if not _resolve_bool_setting("promote", image, config, default=True):
+                continue
+
+            source = image.get("source", {})
+            dockerfile_rel = source.get("dockerfile") or image.get("dockerfile")
+            if not dockerfile_rel:
+                continue
+            dockerfile_path = repo_root / dockerfile_rel
+            if not dockerfile_path.exists():
+                continue
+
+            q_hours = _resolve_quarantine_hours(image, config)
+
+            img_state_file = images_dir / f"{img_name}.yaml"
+            if not img_state_file.exists():
+                continue
+            with open(img_state_file) as f:
+                img_state = yaml.safe_load(f) or {}
+
+            for bi_name in img_state.get("baseImages", []):
+                bi_state = base_image_states_fresh.get(bi_name)
+                if not bi_state:
+                    continue
+
+                promoted_digest = bi_state.get("promotedDigest")
+                if not promoted_digest:
+                    continue
+
+                # Check if the Dockerfile already has this digest pinned
+                full_ref = all_base_image_refs.get(bi_name, bi_state.get("fullImage", ""))
+                if not full_ref:
+                    continue
+
+                modified = _update_dockerfile_digest(dockerfile_path, full_ref, promoted_digest)
+                if modified:
+                    quarantine_hours_map[bi_name] = q_hours
+                    promoted.append({
+                        "image": img_name,
+                        "base_image": bi_name,
+                        "dockerfile": dockerfile_rel,
+                        "new_digest": promoted_digest,
+                        "quarantine_hours": q_hours,
+                        "full_ref": full_ref,
+                    })
+
+    # ── Phase 8: Deliver Dockerfile changes ────────────────────────────────
     pr_urls: List[str] = []
+    pr_errors: List[str] = []
     if promoted and promote_destination == "pr":
-        pr_urls = _create_promotion_pr(repo_root, promoted, quarantine_hours_map)
+        pr_urls, pr_errors = _create_promotion_pr(repo_root, promoted, quarantine_hours_map)
     elif promoted and promote_destination == "main":
-        # Commit Dockerfile changes directly to main
         try:
             _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
             _run_git(repo_root, ["config", "user.email", "cascadeguard[bot]@users.noreply.github.com"])
             for p in promoted:
                 _run_git(repo_root, ["add", p["dockerfile"]])
             scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            names = [p["image"] for p in promoted]
             _run_git(repo_root, ["commit", "-m",
                 f"chore(deps): promote {len(promoted)} base image(s) — {scan_date}\n\n"
                 + "\n".join(f"  • {p['image']}: {p['base_image']} → {p['new_digest'][:24]}…" for p in promoted)
@@ -1869,7 +1954,13 @@ def cmd_check(args) -> int:
             _run_git(repo_root, ["push", "origin", "main"])
             print(f"  Promoted {len(promoted)} image(s) directly to main.", file=sys.stderr)
         except Exception as exc:
-            print(f"  Warning: promotion commit failed: {exc}", file=sys.stderr)
+            pr_errors.append(f"commit to main failed: {exc}")
+
+    if pr_errors:
+        print(f"\nError: {len(pr_errors)} promotion(s) failed:", file=sys.stderr)
+        for err in pr_errors:
+            print(f"  ✗ {err}", file=sys.stderr)
+        return 1
 
     return 1 if (has_drift or has_new_tags) else 0
 

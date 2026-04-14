@@ -217,7 +217,7 @@ class TestDriftWithQuarantineElapsed:
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         err = capsys.readouterr().err
-        assert "promoted" in err.lower()
+        assert "eligible for promotion" in err.lower() or "promoted" in err.lower()
 
     def test_state_records_promotion(self, tmp_path):
         """After promotion, promotedDigest should match currentDigest."""
@@ -238,9 +238,13 @@ class TestDriftWithQuarantineElapsed:
         assert bi_state["promotedDigest"] == DIGEST_NEW
         assert bi_state["promotedAt"] is not None
 
-    def test_already_promoted_digest_skipped(self, tmp_path):
-        """If promotedDigest == currentDigest, no Dockerfile change."""
-        images_yaml, state_dir = _setup_repo(tmp_path, [_MYAPP], _MYAPP_DF)
+    def test_already_promoted_and_pinned_skipped(self, tmp_path):
+        """If promotedDigest == currentDigest AND Dockerfile already pinned, no change."""
+        images_yaml, state_dir = _setup_repo(tmp_path,
+            images=[_MYAPP],
+            dockerfiles={
+                "images/myapp/Dockerfile": f"FROM node:22@{DIGEST_NEW}\nRUN echo hello\n",
+            })
         long_ago = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         _seed_base_image_state(state_dir, "node-22",
                                 digest=DIGEST_NEW,
@@ -255,8 +259,9 @@ class TestDriftWithQuarantineElapsed:
             with patch("app._get_dockerhub_tags", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
+        # Dockerfile should be unchanged — already pinned to the promoted digest
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
-        assert "@sha256:" not in content
+        assert f"FROM node:22@{DIGEST_NEW}" in content
 
 
 class TestQuarantineUsesPublishedAt:
@@ -323,10 +328,14 @@ class TestQuarantineDisabled:
 
 
 class TestNoDrift:
-    """No drift, digest already promoted → Dockerfile untouched."""
+    """No drift, digest already promoted and pinned → Dockerfile untouched."""
 
     def test_dockerfile_unchanged(self, tmp_path):
-        images_yaml, state_dir = _setup_repo(tmp_path, [_MYAPP], _MYAPP_DF)
+        images_yaml, state_dir = _setup_repo(tmp_path,
+            images=[_MYAPP],
+            dockerfiles={
+                "images/myapp/Dockerfile": f"FROM node:22@{DIGEST_OLD}\nRUN echo hello\n",
+            })
         long_ago = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         _seed_base_image_state(state_dir, "node-22",
                                 digest=DIGEST_OLD,
@@ -343,7 +352,7 @@ class TestNoDrift:
 
         assert rc == 0
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
-        assert "@sha256:" not in content
+        assert f"FROM node:22@{DIGEST_OLD}" in content
 
 
 class TestPerImagePromoteFalse:
