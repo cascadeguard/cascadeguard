@@ -244,10 +244,10 @@ class CascadeGuardTool:
                     os_name = plat.get('os', 'unknown')
                     arch = plat.get('architecture', 'unknown')
                     variant = plat.get('variant', '')
-                    label = f"{os_name}/{arch}"
+                    f.write(f"  - os: {os_name}\n")
+                    f.write(f"    architecture: {arch}\n")
                     if variant:
-                        label += f"/{variant}"
-                    f.write(f"  - {label}\n")
+                        f.write(f"    variant: {variant}\n")
             else:
                 f.write("platforms: []\n")
             f.write("\n")
