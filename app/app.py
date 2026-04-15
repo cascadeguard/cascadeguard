@@ -1086,7 +1086,20 @@ def _get_dockerhub_token() -> Optional[str]:
         return None
     import base64
     credentials = base64.b64encode(f"{username}:{token}".encode()).decode()
-    return f"Basic {credentials}"
+    auth_header = f"Basic {credentials}"
+
+    # Verify credentials with a lightweight API call
+    try:
+        req = urllib.request.Request("https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=1")
+        req.add_header("Authorization", auth_header)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            json.loads(resp.read())
+        logger.info(f"Docker Hub: authenticated as {username}")
+    except Exception as exc:
+        logger.warning(f"Docker Hub: auth failed for {username}: {exc}")
+        return None
+
+    return auth_header
 
 
 def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:

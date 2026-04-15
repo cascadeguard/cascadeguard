@@ -473,15 +473,23 @@ class TestGetDockerHubToken:
             assert _get_dockerhub_token() is None
 
     def test_returns_basic_auth_with_credentials(self):
+        def mock_urlopen(req, timeout=10):
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({"results": []}).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
         with patch.dict("os.environ", {
             "DOCKERHUB_USERNAME": "myuser",
             "DOCKERHUB_TOKEN": "mytoken",
         }, clear=True):
-            result = _get_dockerhub_token()
-            assert result is not None
-            assert result.startswith("Basic ")
-            decoded = base64.b64decode(result.split(" ")[1]).decode()
-            assert decoded == "myuser:mytoken"
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                result = _get_dockerhub_token()
+                assert result is not None
+                assert result.startswith("Basic ")
+                decoded = base64.b64decode(result.split(" ")[1]).decode()
+                assert decoded == "myuser:mytoken"
 
 
 class TestGetDockerHubTagsAuth:
@@ -523,9 +531,11 @@ class TestGetDockerHubTagsAuth:
             with patch("urllib.request.urlopen", side_effect=mock_urlopen):
                 _get_dockerhub_tags("library", "nginx")
 
-        assert len(calls) == 1
-        assert calls[0].get_header("Authorization") is not None
-        assert calls[0].get_header("Authorization").startswith("Basic ")
+        # First call is auth verification, second is the actual tag fetch
+        tag_calls = [c for c in calls if "tags" in c.full_url and "library/nginx" in c.full_url]
+        assert len(tag_calls) == 1
+        assert tag_calls[0].get_header("Authorization") is not None
+        assert tag_calls[0].get_header("Authorization").startswith("Basic ")
 
 
 class TestNamespaceResolution:
