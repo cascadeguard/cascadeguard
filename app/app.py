@@ -1073,13 +1073,21 @@ _DOCKER_HUB_TAGS_URL = (
 )
 
 
+_dockerhub_auth_cache: Optional[str] = None
+_dockerhub_auth_checked: bool = False
+
+
 def _get_dockerhub_token() -> Optional[str]:
-    """Get Docker Hub auth header value.
+    """Get Docker Hub auth header value (cached).
 
     Uses DOCKERHUB_USERNAME + DOCKERHUB_TOKEN env vars.
-    The PAT can be used directly as HTTP Basic Auth.
-    Returns a Basic auth header value, or None if no credentials.
+    Verifies credentials once, then caches the result.
     """
+    global _dockerhub_auth_cache, _dockerhub_auth_checked
+    if _dockerhub_auth_checked:
+        return _dockerhub_auth_cache
+
+    _dockerhub_auth_checked = True
     username = os.environ.get("DOCKERHUB_USERNAME", "")
     token = os.environ.get("DOCKERHUB_TOKEN", "")
     if not username or not token:
@@ -1095,15 +1103,16 @@ def _get_dockerhub_token() -> Optional[str]:
         with urllib.request.urlopen(req, timeout=10) as resp:
             json.loads(resp.read())
         logger.info(f"Docker Hub: authenticated as {username}")
+        _dockerhub_auth_cache = auth_header
     except Exception as exc:
         logger.warning(f"Docker Hub: auth failed for {username}: {exc}")
-        return None
 
-    return auth_header
+    return _dockerhub_auth_cache
 
 
 def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:
     """Fetch all tags for a Docker Hub image, paginating up to 10 pages."""
+    import time
     url: Optional[str] = _DOCKER_HUB_TAGS_URL.format(namespace=namespace, image=image)
     tags: List[str] = []
     page = 0
@@ -1118,6 +1127,8 @@ def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:
             tags.extend(t["name"] for t in data.get("results", []))
             url = data.get("next") or ""
             page += 1
+            if url:
+                time.sleep(0.2)  # pace requests to avoid 429
     except Exception as exc:
         logger.warning(f"Could not fetch tags for {namespace}/{image}: {exc}")
     return tags
@@ -1660,7 +1671,7 @@ def cmd_check(args) -> int:
             with open(state_file) as f:
                 existing = yaml.safe_load(f) or {}
             # Update lastChecked but preserve runtime data
-            existing["lastChecked"] = datetime.now(timezone.utc).isoformat()
+            # Note: lastChecked is updated in Phase 3 only on successful registry query
             new_state = existing
         else:
             new_state = tool.generate_base_image_state(full_ref)
@@ -1739,23 +1750,40 @@ def cmd_check(args) -> int:
                 tool.write_base_image_state(state, state_file)
 
     # ── Phase 4: Check upstream tags (absorbed from check-upstream) ────────
+    # Sort by lastChecked (oldest first) so rate-limited runs make progress
+    tag_check_images = []
     for image in resolved_images:
         name = image.get("name")
         if not name or not image.get("enabled", True):
             continue
         if image_filter and name != image_filter:
             continue
-
-        # Only check Docker Hub tags for Docker Hub images
         registry = image.get("registry", "")
         if registry and registry not in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
             continue
+        # Read lastChecked from image state if available
+        img_state_file = images_dir / f"{name}.yaml"
+        last_checked = "9999"  # default: check last
+        if img_state_file.exists():
+            try:
+                with open(img_state_file) as f:
+                    ist = yaml.safe_load(f) or {}
+                last_checked = str(ist.get("lastChecked", "9999"))
+            except Exception:
+                pass
+        tag_check_images.append((last_checked, image))
 
+    tag_check_images.sort(key=lambda x: x[0])
+    rate_limited = False
+
+    for _, image in tag_check_images:
+        if rate_limited:
+            break
+
+        name = image.get("name")
         img_name = image.get("image", name)
         namespace = image.get("namespace", "library")
 
-        # Use full_name if available (e.g. "bitnami/postgresql"),
-        # otherwise construct from namespace/image
         full_name = image.get("full_name", "")
         if full_name and "/" in full_name:
             tag_namespace, tag_image = full_name.split("/", 1)
@@ -1766,6 +1794,11 @@ def cmd_check(args) -> int:
         current_tags: Set[str] = set(image.get("latest_stable_tags", []))
 
         upstream_tags = _get_dockerhub_tags(tag_namespace, tag_image)
+        if not upstream_tags and current_tags:
+            # Likely rate limited — stop processing more images
+            rate_limited = True
+            continue
+
         stable_upstream = {t for t in upstream_tags if _is_stable_tag(t)}
 
         new_tags = stable_upstream - current_tags
