@@ -464,6 +464,11 @@ from types import SimpleNamespace
 
 
 class TestGetDockerHubToken:
+    def setup_method(self):
+        import app
+        app._dockerhub_auth_cache = None
+        app._dockerhub_auth_checked = False
+
     def test_returns_none_without_env_vars(self):
         with patch.dict("os.environ", {}, clear=True):
             assert _get_dockerhub_token() is None
@@ -493,6 +498,10 @@ class TestGetDockerHubToken:
 
 
 class TestGetDockerHubTagsAuth:
+    def setup_method(self):
+        import app
+        app._dockerhub_auth_cache = None
+        app._dockerhub_auth_checked = False
     def test_unauthenticated_request(self):
         """Without credentials, no Authorization header is sent."""
         calls = []
@@ -645,3 +654,89 @@ class TestNamespaceResolution:
                 cmd_check(args)
 
         assert len(tag_calls) == 0
+
+
+class TestRateLimitedIncrementalProgress:
+    """Phase 4 processes oldest-first and stops on rate limit."""
+
+    def setup_method(self):
+        import app
+        app._dockerhub_auth_cache = None
+        app._dockerhub_auth_checked = False
+
+    def test_processes_oldest_first_stops_on_rate_limit(self, tmp_path):
+        """Three images, tag fetch fails on the third. Only first two get checked."""
+        from app import cmd_check
+
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump([
+            {"name": "img-old", "image": "old", "tag": "1", "namespace": "library",
+             "latest_stable_tags": ["1.0"]},
+            {"name": "img-mid", "image": "mid", "tag": "1", "namespace": "library",
+             "latest_stable_tags": ["1.0"]},
+            {"name": "img-new", "image": "new", "tag": "1", "namespace": "library",
+             "latest_stable_tags": ["1.0"]},
+        ]))
+        state_dir = tmp_path / ".cascadeguard"
+        images_dir = state_dir / "images"
+        images_dir.mkdir(parents=True)
+
+        # Seed image state with different lastChecked times
+        for name, checked in [("img-old", "2026-01-01"), ("img-mid", "2026-02-01"), ("img-new", "2026-03-01")]:
+            (images_dir / f"{name}.yaml").write_text(yaml.dump({
+                "name": name, "lastChecked": checked,
+                "baseImages": [], "dockerfile": "",
+            }))
+
+        call_order = []
+
+        def mock_get_tags(namespace, image):
+            call_order.append(image)
+            if len(call_order) >= 3:
+                return []  # simulate rate limit (empty = likely rate limited)
+            return ["1.0", "1.1"]
+
+        args = SimpleNamespace(
+            images_yaml=str(images_yaml), state_dir=str(state_dir),
+            image=None, format="table", promote=False, no_commit=True,
+        )
+
+        with patch("app._fetch_manifest_info", return_value=None):
+            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+                cmd_check(args)
+
+        # Should process oldest first
+        assert call_order[0] == "old"
+        assert call_order[1] == "mid"
+        # Third call returns empty → rate_limited flag set → stops
+        assert len(call_order) == 3  # called but got empty result
+
+    def test_images_without_latest_stable_tags_not_rate_limited(self, tmp_path):
+        """Images with no latest_stable_tags don't trigger rate limit detection."""
+        from app import cmd_check
+
+        images_yaml = tmp_path / "images.yaml"
+        images_yaml.write_text(yaml.dump([
+            {"name": "img-a", "image": "a", "tag": "1", "namespace": "library"},
+            {"name": "img-b", "image": "b", "tag": "1", "namespace": "library"},
+        ]))
+        state_dir = tmp_path / ".cascadeguard"
+        state_dir.mkdir(parents=True)
+
+        call_order = []
+
+        def mock_get_tags(namespace, image):
+            call_order.append(image)
+            return []  # empty but no current_tags → not rate limited
+
+        args = SimpleNamespace(
+            images_yaml=str(images_yaml), state_dir=str(state_dir),
+            image=None, format="table", promote=False, no_commit=True,
+        )
+
+        with patch("app._fetch_manifest_info", return_value=None):
+            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+                cmd_check(args)
+
+        # Both should be called — empty result with no current_tags isn't rate limiting
+        assert len(call_order) == 2
