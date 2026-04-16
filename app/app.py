@@ -1642,6 +1642,11 @@ def cmd_check(args) -> int:
         if image_filter and name != image_filter:
             continue
 
+        registry = image.get("registry", "docker.io") or "docker.io"
+        if registry not in {"docker.io", "index.docker.io", "registry-1.docker.io", ""}:
+            logger.debug("skipping state file for %s: registry %s not yet supported", name, registry)
+            continue
+
         # Find Dockerfile (local or remote)
         source = image.get("source", {})
         dockerfile_rel = source.get("dockerfile") or image.get("dockerfile")
