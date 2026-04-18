@@ -157,7 +157,7 @@ class TestDriftWithQuarantineNotElapsed:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, one_hour_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -174,7 +174,7 @@ class TestDriftWithQuarantineNotElapsed:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, one_hour_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         err = capsys.readouterr().err
@@ -196,7 +196,7 @@ class TestDriftWithQuarantineElapsed:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -213,7 +213,7 @@ class TestDriftWithQuarantineElapsed:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         err = capsys.readouterr().err
@@ -231,7 +231,7 @@ class TestDriftWithQuarantineElapsed:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         bi_state = yaml.safe_load((Path(state_dir) / "base-images" / "node-22.yaml").read_text())
@@ -256,7 +256,7 @@ class TestDriftWithQuarantineElapsed:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         # Dockerfile should be unchanged — already pinned to the promoted digest
@@ -280,7 +280,7 @@ class TestQuarantineUsesPublishedAt:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, published)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -302,7 +302,7 @@ class TestQuarantineDisabled:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, just_now)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -320,7 +320,7 @@ class TestQuarantineDisabled:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, just_now)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -347,7 +347,7 @@ class TestNoDrift:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_OLD, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         assert rc == 0
@@ -368,7 +368,7 @@ class TestPerImagePromoteFalse:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -388,7 +388,7 @@ class TestRepoLevelPromoteFalse:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -407,7 +407,7 @@ class TestNoPromoteFlag:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir,
                                 promote=False))
 
@@ -428,7 +428,7 @@ class TestCustomQuarantinePeriod:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, three_hours_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -446,7 +446,7 @@ class TestCustomQuarantinePeriod:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, three_days_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -466,7 +466,7 @@ class TestRepoLevelQuarantine:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, two_hours_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -490,7 +490,7 @@ class TestUpdateHistory:
 
         new_published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, new_published)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         bi_state = yaml.safe_load((Path(state_dir) / "base-images" / "node-22.yaml").read_text())
@@ -520,7 +520,7 @@ class TestPromoteDestinationMain:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         content = _read_dockerfile(tmp_path, "images/myapp/Dockerfile")
@@ -573,7 +573,7 @@ class TestStateFileRoundtrip:
                           dockerfile="images/myapp/Dockerfile")
 
         with patch("app._fetch_manifest_info", return_value=_mock_info(DIGEST_NEW, long_ago)):
-            with patch("app._get_dockerhub_tags", return_value=[]):
+            with patch("app._get_dockerhub_tags_rich", return_value=[]):
                 cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         # Verify the state file was written successfully (no crash)

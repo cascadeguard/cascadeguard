@@ -516,10 +516,10 @@ class TestCmdCheck:
             "upstreamTags": [],
         }))
 
-        # _get_dockerhub_tags returns empty (simulates 404/rate-limit) and image has
+        # _get_dockerhub_tags_rich returns empty (simulates 404/rate-limit) and image has
         # latest_stable_tags so rate_limited flag is set
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags", return_value=[]):
+             patch("app._get_dockerhub_tags_rich", return_value=[]):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         # Reload state and verify lastChecked was NOT updated
@@ -551,7 +551,12 @@ class TestCmdCheck:
         }))
 
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags", return_value=["3.20", "3.21", "3.22", "3.23"]):
+             patch("app._get_dockerhub_tags_rich", return_value=[
+                 {"name": "3.20", "digest": "sha256:aaa", "last_updated": "2026-04-01T00:00:00Z"},
+                 {"name": "3.21", "digest": "sha256:bbb", "last_updated": "2026-04-02T00:00:00Z"},
+                 {"name": "3.22", "digest": "sha256:ccc", "last_updated": "2026-04-03T00:00:00Z"},
+                 {"name": "3.23", "digest": "sha256:ddd", "last_updated": "2026-04-04T00:00:00Z"},
+             ]):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "alpine.yaml") as f:
@@ -582,18 +587,75 @@ class TestCmdCheck:
             "upstreamTags": [],
         }))
 
-        fake_tags = ["3.0", "3.0.1", "3.1", "3.1.1", "3.2", "3.2.1", "3.3", "3.3.1", "latest"]
+        fake_tags = [
+            {"name": "3.0", "digest": "sha256:a00", "last_updated": "2026-04-01T00:00:00Z"},
+            {"name": "3.0.1", "digest": "sha256:a01", "last_updated": "2026-04-01T00:00:00Z"},
+            {"name": "3.1", "digest": "sha256:a10", "last_updated": "2026-04-02T00:00:00Z"},
+            {"name": "3.1.1", "digest": "sha256:a11", "last_updated": "2026-04-02T00:00:00Z"},
+            {"name": "3.2", "digest": "sha256:a20", "last_updated": "2026-04-03T00:00:00Z"},
+            {"name": "3.2.1", "digest": "sha256:a21", "last_updated": "2026-04-03T00:00:00Z"},
+            {"name": "3.3", "digest": "sha256:a30", "last_updated": "2026-04-04T00:00:00Z"},
+            {"name": "3.3.1", "digest": "sha256:a31", "last_updated": "2026-04-04T00:00:00Z"},
+            {"name": "latest", "digest": "sha256:lat", "last_updated": "2026-04-04T00:00:00Z"},
+        ]
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags", return_value=fake_tags):
+             patch("app._get_dockerhub_tags_rich", return_value=fake_tags):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "fluent-bit.yaml") as f:
             state = yaml.safe_load(f)
-        # "latest" is filtered out by _is_stable_tag, rest should be persisted
+        # "latest" is filtered out by _is_stable_tag, rest should be persisted as dicts
         assert "upstreamTags" in state
+        assert isinstance(state["upstreamTags"], dict)
         assert "3.3" in state["upstreamTags"]
         assert "3.3.1" in state["upstreamTags"]
         assert "latest" not in state["upstreamTags"]
+        # Each tag should have digest info
+        assert state["upstreamTags"]["3.3"]["digest"] == "sha256:a30"
+        assert state["upstreamTags"]["3.3.1"]["digest"] == "sha256:a31"
+
+    def test_tag_repoint_detected_and_previous_digest_stored(self, tmp_path):
+        """When a tag's digest changes, previousDigest must be recorded."""
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "alpine", "image": "alpine", "tag": "3.23",
+              "namespace": "library", "full_name": "library/alpine"}])
+
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "alpine.yaml").write_text(yaml.dump({
+            "name": "alpine",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": "2026-04-15T10:00:00+00:00",
+            "registry": "",
+            "image": "alpine",
+            "tag": "3.23",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": {
+                "3.23": {
+                    "digest": "sha256:old_digest_aaa",
+                    "firstSeen": "2026-04-15T10:00:00+00:00",
+                    "lastSeen": "2026-04-15T10:00:00+00:00",
+                    "lastUpdated": "2026-04-14T00:00:00Z",
+                },
+            },
+        }))
+
+        # Same tag, different digest — repoint
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags_rich", return_value=[
+                 {"name": "3.23", "digest": "sha256:new_digest_bbb", "last_updated": "2026-04-18T00:00:00Z"},
+             ]):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        with open(images_dir / "alpine.yaml") as f:
+            state = yaml.safe_load(f)
+        tag_state = state["upstreamTags"]["3.23"]
+        assert tag_state["digest"] == "sha256:new_digest_bbb"
+        assert tag_state["previousDigest"] == "sha256:old_digest_aaa"
+        # firstSeen should be preserved from original observation
+        assert tag_state["firstSeen"] == "2026-04-15T10:00:00+00:00"
 
     def test_upstream_tags_not_written_on_empty_response(self, tmp_path):
         """When registry returns no tags (error/rate-limit), upstreamTags must not be cleared."""
@@ -619,7 +681,7 @@ class TestCmdCheck:
 
         # Empty response with current_tags set → rate limited, should not touch state
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags", return_value=[]):
+             patch("app._get_dockerhub_tags_rich", return_value=[]):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "nginx.yaml") as f:

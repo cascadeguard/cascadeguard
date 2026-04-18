@@ -581,7 +581,7 @@ class TestNamespaceResolution:
         )
 
         with patch("app._fetch_manifest_info", return_value=None):
-            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+            with patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
                 cmd_check(args)
 
         assert len(tag_calls) == 1
@@ -615,7 +615,7 @@ class TestNamespaceResolution:
         )
 
         with patch("app._fetch_manifest_info", return_value=None):
-            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+            with patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
                 cmd_check(args)
 
         assert len(tag_calls) == 1
@@ -650,7 +650,7 @@ class TestNamespaceResolution:
         )
 
         with patch("app._fetch_manifest_info", return_value=None):
-            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+            with patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
                 cmd_check(args)
 
         assert len(tag_calls) == 0
@@ -694,7 +694,8 @@ class TestRateLimitedIncrementalProgress:
             call_order.append(image)
             if len(call_order) >= 3:
                 return []  # simulate rate limit (empty = likely rate limited)
-            return ["1.0", "1.1"]
+            return [{"name": "1.0", "digest": "sha256:aaa", "last_updated": None},
+                    {"name": "1.1", "digest": "sha256:bbb", "last_updated": None}]
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml), state_dir=str(state_dir),
@@ -702,7 +703,7 @@ class TestRateLimitedIncrementalProgress:
         )
 
         with patch("app._fetch_manifest_info", return_value=None):
-            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+            with patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
                 cmd_check(args)
 
         # Should process oldest first
@@ -735,7 +736,7 @@ class TestRateLimitedIncrementalProgress:
         )
 
         with patch("app._fetch_manifest_info", return_value=None):
-            with patch("app._get_dockerhub_tags", side_effect=mock_get_tags):
+            with patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
                 cmd_check(args)
 
         # Both should be called — empty result with no current_tags isn't rate limiting

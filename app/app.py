@@ -1111,10 +1111,22 @@ def _get_dockerhub_token() -> Optional[str]:
 
 
 def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:
-    """Fetch all tags for a Docker Hub image, paginating up to 10 pages."""
+    """Fetch all tag names for a Docker Hub image (convenience wrapper)."""
+    return [t["name"] for t in _get_dockerhub_tags_rich(namespace, image)]
+
+
+def _get_dockerhub_tags_rich(namespace: str, image: str) -> List[Dict]:
+    """Fetch all tags for a Docker Hub image with digest and timestamp metadata.
+
+    Returns a list of dicts::
+
+        [{"name": "3.3", "digest": "sha256:...", "last_updated": "ISO-8601"}, ...]
+
+    Paginates up to 10 pages.  Returns [] on error.
+    """
     import time
     url: Optional[str] = _DOCKER_HUB_TAGS_URL.format(namespace=namespace, image=image)
-    tags: List[str] = []
+    tags: List[Dict] = []
     page = 0
     hub_auth = _get_dockerhub_token()
     try:
@@ -1124,7 +1136,12 @@ def _get_dockerhub_tags(namespace: str, image: str) -> List[str]:
                 req.add_header("Authorization", hub_auth)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
-            tags.extend(t["name"] for t in data.get("results", []))
+            for t in data.get("results", []):
+                tags.append({
+                    "name": t["name"],
+                    "digest": t.get("digest"),
+                    "last_updated": t.get("last_updated"),
+                })
             url = data.get("next") or ""
             page += 1
             if url:
@@ -1657,7 +1674,7 @@ def cmd_check(args) -> int:
             "dockerfile": dockerfile_rel or "",
             "baseImages": sorted(base_images),
             "currentDigest": existing.get("currentDigest") if existing else None,
-            "upstreamTags": existing.get("upstreamTags", []) if existing else [],
+            "upstreamTags": existing.get("upstreamTags", {}) if existing else {},
         }
 
         with open(state_file, "w") as f:
@@ -1794,14 +1811,15 @@ def cmd_check(args) -> int:
 
         current_tags: Set[str] = set(image.get("latest_stable_tags", []))
 
-        upstream_tags = _get_dockerhub_tags(tag_namespace, tag_image)
-        if not upstream_tags and current_tags:
+        upstream_tags_rich = _get_dockerhub_tags_rich(tag_namespace, tag_image)
+        upstream_tag_names = [t["name"] for t in upstream_tags_rich]
+        if not upstream_tag_names and current_tags:
             # Likely rate limited — stop processing more images
             rate_limited = True
             continue
 
         # No data returned and no existing tags — skip without updating lastChecked
-        if not upstream_tags:
+        if not upstream_tag_names:
             continue
 
         # Successful registry query — update lastChecked and persist tags
@@ -1815,13 +1833,48 @@ def cmd_check(args) -> int:
         now_iso = datetime.now(timezone.utc).isoformat()
         img_state["lastChecked"] = now_iso
 
-        stable_upstream = {t for t in upstream_tags if _is_stable_tag(t)}
+        # Build tag→digest map from rich response, filtering to stable tags
+        existing_tags = img_state.get("upstreamTags") or {}
+        # Migrate from old list format to dict format
+        if isinstance(existing_tags, list):
+            existing_tags = {}
+        updated_tags = dict(existing_tags)
 
-        # Persist all discovered stable upstream tags
-        if stable_upstream:
-            img_state["upstreamTags"] = sorted(stable_upstream)
+        stable_tag_names = set()
+        for t in upstream_tags_rich:
+            tag_name = t["name"]
+            if not _is_stable_tag(tag_name):
+                continue
+            stable_tag_names.add(tag_name)
+            new_digest = t.get("digest")
+            last_updated = t.get("last_updated")
+            prev = updated_tags.get(tag_name)
+            if prev is None:
+                # New tag — first observation
+                updated_tags[tag_name] = {
+                    "digest": new_digest,
+                    "firstSeen": now_iso,
+                    "lastSeen": now_iso,
+                    "lastUpdated": last_updated,
+                }
+            elif new_digest and prev.get("digest") != new_digest:
+                # Tag repointed — digest changed
+                updated_tags[tag_name] = {
+                    "digest": new_digest,
+                    "firstSeen": prev.get("firstSeen", now_iso),
+                    "lastSeen": now_iso,
+                    "lastUpdated": last_updated,
+                    "previousDigest": prev.get("digest"),
+                }
+            else:
+                # No change — just bump lastSeen
+                updated_tags[tag_name] = dict(prev)
+                updated_tags[tag_name]["lastSeen"] = now_iso
 
-        new_tags = stable_upstream - current_tags
+        if updated_tags:
+            img_state["upstreamTags"] = dict(sorted(updated_tags.items()))
+
+        new_tags = stable_tag_names - current_tags
         surfaced = []
         for t in new_tags:
             base = t.split("-")[0].split(".")[0]
