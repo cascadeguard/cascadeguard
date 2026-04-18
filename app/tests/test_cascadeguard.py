@@ -491,19 +491,141 @@ class TestCmdCheck:
         assert args.image == "node-22"
         assert args.format == "json"
 
-    # ── parser ───────────────────────────────────────────────────────────────
+    # ── lastChecked only updated on successful registry query ────────────────
 
-    def test_parser_check_defaults(self):
-        parser = build_parser()
-        args = parser.parse_args(["images", "check"])
-        assert args.image is None
-        assert args.format == "table"
+    def test_lastchecked_not_updated_on_registry_error(self, tmp_path):
+        """lastChecked must NOT be updated when the registry returns an error (404/403/429)."""
+        original_ts = "2026-04-15T10:00:00+00:00"
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "seaweedfs", "image": "seaweedfs", "tag": "3.65", "namespace": "library",
+              "full_name": "chrislusf/seaweedfs"}])
 
-    def test_parser_check_with_flags(self):
-        parser = build_parser()
-        args = parser.parse_args(["images", "check", "--image", "node-22", "--format", "json"])
-        assert args.image == "node-22"
-        assert args.format == "json"
+        # Pre-seed the image state with an existing lastChecked
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "seaweedfs.yaml").write_text(yaml.dump({
+            "name": "seaweedfs",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": original_ts,
+            "registry": "",
+            "image": "seaweedfs",
+            "tag": "3.65",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": [],
+        }))
+
+        # _get_dockerhub_tags returns empty (simulates 404/rate-limit) and image has
+        # latest_stable_tags so rate_limited flag is set
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags", return_value=[]):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        # Reload state and verify lastChecked was NOT updated
+        with open(images_dir / "seaweedfs.yaml") as f:
+            state = yaml.safe_load(f)
+        # Phase 1 should preserve the original lastChecked (not overwrite with now)
+        assert state["lastChecked"] == original_ts
+
+    def test_lastchecked_updated_on_successful_tag_fetch(self, tmp_path):
+        """lastChecked MUST be updated when upstream tags are successfully fetched."""
+        original_ts = "2026-04-15T10:00:00+00:00"
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "alpine", "image": "alpine", "tag": "3.23", "namespace": "library",
+              "full_name": "library/alpine"}])
+
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "alpine.yaml").write_text(yaml.dump({
+            "name": "alpine",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": original_ts,
+            "registry": "",
+            "image": "alpine",
+            "tag": "3.23",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": [],
+        }))
+
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags", return_value=["3.20", "3.21", "3.22", "3.23"]):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        with open(images_dir / "alpine.yaml") as f:
+            state = yaml.safe_load(f)
+        # lastChecked should have been updated (different from original)
+        assert state["lastChecked"] != original_ts
+
+    # ── upstream tags persisted to state file ────────────────────────────────
+
+    def test_upstream_tags_persisted_to_state_file(self, tmp_path):
+        """Discovered upstream tags must be written to the image state YAML."""
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "fluent-bit", "image": "fluent-bit", "tag": "3.3",
+              "namespace": "fluent", "full_name": "fluent/fluent-bit"}])
+
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "fluent-bit.yaml").write_text(yaml.dump({
+            "name": "fluent-bit",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": "2026-04-15T10:00:00+00:00",
+            "registry": "",
+            "image": "fluent-bit",
+            "tag": "3.3",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": [],
+        }))
+
+        fake_tags = ["3.0", "3.0.1", "3.1", "3.1.1", "3.2", "3.2.1", "3.3", "3.3.1", "latest"]
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags", return_value=fake_tags):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        with open(images_dir / "fluent-bit.yaml") as f:
+            state = yaml.safe_load(f)
+        # "latest" is filtered out by _is_stable_tag, rest should be persisted
+        assert "upstreamTags" in state
+        assert "3.3" in state["upstreamTags"]
+        assert "3.3.1" in state["upstreamTags"]
+        assert "latest" not in state["upstreamTags"]
+
+    def test_upstream_tags_not_written_on_empty_response(self, tmp_path):
+        """When registry returns no tags (error/rate-limit), upstreamTags must not be cleared."""
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "nginx", "image": "nginx", "tag": "1.27", "namespace": "library",
+              "full_name": "library/nginx", "latest_stable_tags": ["1.26", "1.27"]}])
+
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        existing_tags = ["1.25", "1.26", "1.27"]
+        (images_dir / "nginx.yaml").write_text(yaml.dump({
+            "name": "nginx",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": "2026-04-15T10:00:00+00:00",
+            "registry": "",
+            "image": "nginx",
+            "tag": "1.27",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": existing_tags,
+        }))
+
+        # Empty response with current_tags set → rate limited, should not touch state
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags", return_value=[]):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        with open(images_dir / "nginx.yaml") as f:
+            state = yaml.safe_load(f)
+        # Existing tags should be preserved (not cleared)
+        assert state["upstreamTags"] == existing_tags
 
 
 # ---------------------------------------------------------------------------
