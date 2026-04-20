@@ -571,7 +571,7 @@ class TestNamespaceResolution:
 
         def mock_get_tags(namespace, image):
             tag_calls.append((namespace, image))
-            return []
+            return {"tags": [], "error": None, "http_status": None}
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml),
@@ -605,7 +605,7 @@ class TestNamespaceResolution:
 
         def mock_get_tags(namespace, image):
             tag_calls.append((namespace, image))
-            return []
+            return {"tags": [], "error": None, "http_status": None}
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml),
@@ -640,7 +640,7 @@ class TestNamespaceResolution:
 
         def mock_get_tags(namespace, image):
             tag_calls.append((namespace, image))
-            return []
+            return {"tags": [], "error": None, "http_status": None}
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml),
@@ -693,9 +693,9 @@ class TestRateLimitedIncrementalProgress:
         def mock_get_tags(namespace, image):
             call_order.append(image)
             if len(call_order) >= 3:
-                return []  # simulate rate limit (empty = likely rate limited)
-            return [{"name": "1.0", "digest": "sha256:aaa", "last_updated": None},
-                    {"name": "1.1", "digest": "sha256:bbb", "last_updated": None}]
+                return {"tags": [], "error": "rate_limited", "http_status": 429}  # simulate rate limit
+            return {"tags": [{"name": "1.0", "digest": "sha256:aaa", "last_updated": None},
+                    {"name": "1.1", "digest": "sha256:bbb", "last_updated": None}], "error": None, "http_status": None}
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml), state_dir=str(state_dir),
@@ -728,7 +728,7 @@ class TestRateLimitedIncrementalProgress:
 
         def mock_get_tags(namespace, image):
             call_order.append(image)
-            return []  # empty but no current_tags → not rate limited
+            return {"tags": [], "error": None, "http_status": None}  # empty but no current_tags → not rate limited
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml), state_dir=str(state_dir),

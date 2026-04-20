@@ -516,15 +516,17 @@ class TestCmdCheck:
             "upstreamTags": {},
         }))
 
-        # Empty response with no known tags = 404, not rate limit
+        # 404 response
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=[]):
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": [], "error": "not_found", "http_status": 404}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "seaweedfs.yaml") as f:
             state = yaml.safe_load(f)
         # lastChecked should be updated so this image rotates to the back of the queue
         assert state["lastChecked"] != original_ts
+        assert state["checkStatus"] == "error"
+        assert "404" in state["checkError"]
 
     def test_lastchecked_not_updated_on_rate_limit(self, tmp_path):
         """lastChecked must NOT be updated when rate limited (empty response but known tags exist)."""
@@ -550,7 +552,7 @@ class TestCmdCheck:
 
         # Empty response but we have known tags → rate limited
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=[]):
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": [], "error": "rate_limited", "http_status": 429}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "nginx.yaml") as f:
@@ -580,12 +582,12 @@ class TestCmdCheck:
         }))
 
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=[
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": [
                  {"name": "3.20", "digest": "sha256:aaa", "last_updated": "2026-04-01T00:00:00Z"},
                  {"name": "3.21", "digest": "sha256:bbb", "last_updated": "2026-04-02T00:00:00Z"},
                  {"name": "3.22", "digest": "sha256:ccc", "last_updated": "2026-04-03T00:00:00Z"},
                  {"name": "3.23", "digest": "sha256:ddd", "last_updated": "2026-04-04T00:00:00Z"},
-             ]):
+             ], "error": None, "http_status": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "alpine.yaml") as f:
@@ -631,7 +633,7 @@ class TestCmdCheck:
             {"name": "latest", "digest": "sha256:lat", "last_updated": "2026-04-04T00:00:00Z"},
         ]
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=fake_tags):
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": fake_tags, "error": None, "http_status": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "fluent-bit.yaml") as f:
@@ -671,12 +673,12 @@ class TestCmdCheck:
 
         # Return the same tags — nothing new
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=[
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": [
                  {"name": "3.20", "digest": "sha256:aaa", "last_updated": None},
                  {"name": "3.21", "digest": "sha256:bbb", "last_updated": None},
                  {"name": "3.22", "digest": "sha256:ccc", "last_updated": None},
                  {"name": "3.23", "digest": "sha256:ddd", "last_updated": None},
-             ]):
+             ], "error": None, "http_status": None}):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         out = capsys.readouterr().out
@@ -713,9 +715,9 @@ class TestCmdCheck:
 
         # Same tag, different digest — repoint
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=[
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": [
                  {"name": "3.23", "digest": "sha256:new_digest_bbb", "last_updated": "2026-04-18T00:00:00Z"},
-             ]):
+             ], "error": None, "http_status": None}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "alpine.yaml") as f:
@@ -750,7 +752,7 @@ class TestCmdCheck:
 
         # Empty response with current_tags set → rate limited, should not touch state
         with patch("app._fetch_manifest_info", return_value=None), \
-             patch("app._get_dockerhub_tags_rich", return_value=[]):
+             patch("app._get_dockerhub_tags_rich", return_value={"tags": [], "error": "rate_limited", "http_status": 429}):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
         with open(images_dir / "nginx.yaml") as f:
@@ -807,7 +809,7 @@ class TestCmdCheck:
 
         def mock_get_tags(namespace, image):
             call_order.append(image)
-            return [{"name": "1.0", "digest": "sha256:xxx", "last_updated": None}]
+            return {"tags": [{"name": "1.0", "digest": "sha256:xxx", "last_updated": None}], "error": None, "http_status": None}
 
         with patch("app._fetch_manifest_info", return_value=None), \
              patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
