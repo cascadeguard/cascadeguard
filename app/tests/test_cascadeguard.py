@@ -493,8 +493,8 @@ class TestCmdCheck:
 
     # ── lastChecked only updated on successful registry query ────────────────
 
-    def test_lastchecked_not_updated_on_registry_error(self, tmp_path):
-        """lastChecked must NOT be updated when the registry returns an error (404/403/429)."""
+    def test_lastchecked_updated_on_404_to_prevent_queue_hogging(self, tmp_path):
+        """lastChecked MUST be updated even on 404 so the image doesn't stay at the front of the queue."""
         original_ts = "2026-04-15T10:00:00+00:00"
         images_yaml, state_dir = self._setup_repo(tmp_path,
             [{"name": "seaweedfs", "image": "seaweedfs", "tag": "3.65", "namespace": "library",
@@ -513,19 +513,48 @@ class TestCmdCheck:
             "dockerfile": "",
             "baseImages": [],
             "currentDigest": None,
-            "upstreamTags": [],
+            "upstreamTags": {},
         }))
 
-        # _get_dockerhub_tags_rich returns empty (simulates 404/rate-limit) and image has
-        # latest_stable_tags so rate_limited flag is set
+        # Empty response with no known tags = 404, not rate limit
         with patch("app._fetch_manifest_info", return_value=None), \
              patch("app._get_dockerhub_tags_rich", return_value=[]):
             cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
 
-        # Reload state and verify lastChecked was NOT updated
         with open(images_dir / "seaweedfs.yaml") as f:
             state = yaml.safe_load(f)
-        # Phase 1 should preserve the original lastChecked (not overwrite with now)
+        # lastChecked should be updated so this image rotates to the back of the queue
+        assert state["lastChecked"] != original_ts
+
+    def test_lastchecked_not_updated_on_rate_limit(self, tmp_path):
+        """lastChecked must NOT be updated when rate limited (empty response but known tags exist)."""
+        original_ts = "2026-04-15T10:00:00+00:00"
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "nginx", "image": "nginx", "tag": "1.27", "namespace": "library",
+              "full_name": "library/nginx"}])
+
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "nginx.yaml").write_text(yaml.dump({
+            "name": "nginx",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": original_ts,
+            "registry": "",
+            "image": "nginx",
+            "tag": "1.27",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": {"1.26": {"digest": "sha256:aaa"}, "1.27": {"digest": "sha256:bbb"}},
+        }))
+
+        # Empty response but we have known tags → rate limited
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags_rich", return_value=[]):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        with open(images_dir / "nginx.yaml") as f:
+            state = yaml.safe_load(f)
         assert state["lastChecked"] == original_ts
 
     def test_lastchecked_updated_on_successful_tag_fetch(self, tmp_path):
@@ -574,6 +603,7 @@ class TestCmdCheck:
 
         images_dir = Path(state_dir) / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
+        # Pre-seed with some known tags — these should NOT be reported as new
         (images_dir / "fluent-bit.yaml").write_text(yaml.dump({
             "name": "fluent-bit",
             "enrolledAt": "2026-04-14T19:11:49+00:00",
@@ -584,18 +614,20 @@ class TestCmdCheck:
             "dockerfile": "",
             "baseImages": [],
             "currentDigest": None,
-            "upstreamTags": [],
+            "upstreamTags": {
+                "3.0": {"digest": "sha256:old0", "firstSeen": "2026-04-15T00:00:00+00:00", "lastSeen": "2026-04-15T00:00:00+00:00"},
+                "3.1": {"digest": "sha256:old1", "firstSeen": "2026-04-15T00:00:00+00:00", "lastSeen": "2026-04-15T00:00:00+00:00"},
+                "3.2": {"digest": "sha256:old2", "firstSeen": "2026-04-15T00:00:00+00:00", "lastSeen": "2026-04-15T00:00:00+00:00"},
+                "3.3": {"digest": "sha256:old3", "firstSeen": "2026-04-15T00:00:00+00:00", "lastSeen": "2026-04-15T00:00:00+00:00"},
+            },
         }))
 
         fake_tags = [
-            {"name": "3.0", "digest": "sha256:a00", "last_updated": "2026-04-01T00:00:00Z"},
-            {"name": "3.0.1", "digest": "sha256:a01", "last_updated": "2026-04-01T00:00:00Z"},
-            {"name": "3.1", "digest": "sha256:a10", "last_updated": "2026-04-02T00:00:00Z"},
-            {"name": "3.1.1", "digest": "sha256:a11", "last_updated": "2026-04-02T00:00:00Z"},
-            {"name": "3.2", "digest": "sha256:a20", "last_updated": "2026-04-03T00:00:00Z"},
-            {"name": "3.2.1", "digest": "sha256:a21", "last_updated": "2026-04-03T00:00:00Z"},
-            {"name": "3.3", "digest": "sha256:a30", "last_updated": "2026-04-04T00:00:00Z"},
-            {"name": "3.3.1", "digest": "sha256:a31", "last_updated": "2026-04-04T00:00:00Z"},
+            {"name": "3.0", "digest": "sha256:old0", "last_updated": "2026-04-01T00:00:00Z"},
+            {"name": "3.1", "digest": "sha256:old1", "last_updated": "2026-04-02T00:00:00Z"},
+            {"name": "3.2", "digest": "sha256:old2", "last_updated": "2026-04-03T00:00:00Z"},
+            {"name": "3.3", "digest": "sha256:old3", "last_updated": "2026-04-04T00:00:00Z"},
+            {"name": "3.3.1", "digest": "sha256:new1", "last_updated": "2026-04-05T00:00:00Z"},
             {"name": "latest", "digest": "sha256:lat", "last_updated": "2026-04-04T00:00:00Z"},
         ]
         with patch("app._fetch_manifest_info", return_value=None), \
@@ -604,15 +636,52 @@ class TestCmdCheck:
 
         with open(images_dir / "fluent-bit.yaml") as f:
             state = yaml.safe_load(f)
-        # "latest" is filtered out by _is_stable_tag, rest should be persisted as dicts
-        assert "upstreamTags" in state
         assert isinstance(state["upstreamTags"], dict)
+        # Known tags preserved, new tag added
         assert "3.3" in state["upstreamTags"]
         assert "3.3.1" in state["upstreamTags"]
         assert "latest" not in state["upstreamTags"]
-        # Each tag should have digest info
-        assert state["upstreamTags"]["3.3"]["digest"] == "sha256:a30"
-        assert state["upstreamTags"]["3.3.1"]["digest"] == "sha256:a31"
+        assert state["upstreamTags"]["3.3.1"]["digest"] == "sha256:new1"
+
+    def test_known_tags_not_reported_as_new(self, tmp_path, capsys):
+        """Tags already in the state file must NOT appear in new-tags output."""
+        images_yaml, state_dir = self._setup_repo(tmp_path,
+            [{"name": "alpine", "image": "alpine", "tag": "3.23",
+              "namespace": "library", "full_name": "library/alpine"}])
+
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "alpine.yaml").write_text(yaml.dump({
+            "name": "alpine",
+            "enrolledAt": "2026-04-14T19:11:49+00:00",
+            "lastChecked": "2026-04-15T10:00:00+00:00",
+            "registry": "",
+            "image": "alpine",
+            "tag": "3.23",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": {
+                "3.20": {"digest": "sha256:aaa"},
+                "3.21": {"digest": "sha256:bbb"},
+                "3.22": {"digest": "sha256:ccc"},
+                "3.23": {"digest": "sha256:ddd"},
+            },
+        }))
+
+        # Return the same tags — nothing new
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags_rich", return_value=[
+                 {"name": "3.20", "digest": "sha256:aaa", "last_updated": None},
+                 {"name": "3.21", "digest": "sha256:bbb", "last_updated": None},
+                 {"name": "3.22", "digest": "sha256:ccc", "last_updated": None},
+                 {"name": "3.23", "digest": "sha256:ddd", "last_updated": None},
+             ]):
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        out = capsys.readouterr().out
+        assert "new-tags" not in out
+        assert "new upstream tags" not in out
 
     def test_tag_repoint_detected_and_previous_digest_stored(self, tmp_path):
         """When a tag's digest changes, previousDigest must be recorded."""
@@ -688,6 +757,66 @@ class TestCmdCheck:
             state = yaml.safe_load(f)
         # Existing tags should be preserved (not cleared)
         assert state["upstreamTags"] == existing_tags
+
+    # ── ordering: recently checked images should be at the back ──────────────
+
+    def test_recently_checked_image_processed_after_stale_one(self, tmp_path):
+        """An image checked recently must sort AFTER one checked long ago.
+
+        Reproduces the bug where fluent-bit was always first despite having
+        a recent lastChecked — Phase 4 was stamping each image with
+        datetime.now() as it was processed, so the first image always got
+        the earliest timestamp and sorted first on the next run.
+        """
+        images_yaml, state_dir = self._setup_repo(tmp_path, [
+            {"name": "fluent-bit", "image": "fluent-bit", "tag": "3.3",
+             "namespace": "fluent", "full_name": "fluent/fluent-bit"},
+            {"name": "zookeeper", "image": "zookeeper", "tag": "3.9",
+             "namespace": "library", "full_name": "library/zookeeper"},
+        ])
+
+        # Pre-seed state: fluent-bit was checked recently, zookeeper long ago
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "fluent-bit.yaml").write_text(yaml.dump({
+            "name": "fluent-bit",
+            "enrolledAt": "2026-04-14T00:00:00+00:00",
+            "lastChecked": "2026-04-20T06:00:00+00:00",  # checked today
+            "registry": "",
+            "image": "fluent-bit",
+            "tag": "3.3",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": {"3.3": {"digest": "sha256:aaa"}},
+        }))
+        (images_dir / "zookeeper.yaml").write_text(yaml.dump({
+            "name": "zookeeper",
+            "enrolledAt": "2026-04-14T00:00:00+00:00",
+            "lastChecked": "2026-04-15T06:00:00+00:00",  # checked 5 days ago
+            "registry": "",
+            "image": "zookeeper",
+            "tag": "3.9",
+            "dockerfile": "",
+            "baseImages": [],
+            "currentDigest": None,
+            "upstreamTags": {"3.9": {"digest": "sha256:bbb"}},
+        }))
+
+        call_order = []
+
+        def mock_get_tags(namespace, image):
+            call_order.append(image)
+            return [{"name": "1.0", "digest": "sha256:xxx", "last_updated": None}]
+
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
+            cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        # zookeeper (older lastChecked) must be processed BEFORE fluent-bit
+        assert len(call_order) == 2
+        assert call_order[0] == "zookeeper", f"Expected zookeeper first, got {call_order}"
+        assert call_order[1] == "fluent-bit", f"Expected fluent-bit second, got {call_order}"
 
 
 # ---------------------------------------------------------------------------
