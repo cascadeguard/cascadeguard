@@ -621,8 +621,8 @@ class TestNamespaceResolution:
         assert len(tag_calls) == 1
         assert tag_calls[0] == ("library", "nginx")
 
-    def test_skips_non_dockerhub_registry(self, tmp_path):
-        """Images with ghcr.io registry skip tag checking."""
+    def test_ghcr_registry_uses_oci_not_dockerhub(self, tmp_path):
+        """Images with ghcr.io registry use the OCI fetcher, not Docker Hub API."""
         from app import cmd_check
 
         images_yaml = tmp_path / "images.yaml"
@@ -630,17 +630,22 @@ class TestNamespaceResolution:
             "name": "myapp",
             "image": "myapp",
             "tag": "latest",
-            "registry": "ghcr.io/cascadeguard",
-            "source": {"dockerfile": "images/myapp/Dockerfile"},
+            "namespace": "cascadeguard",
+            "registry": "ghcr.io",
         }]))
         state_dir = tmp_path / ".cascadeguard"
         state_dir.mkdir()
 
-        tag_calls = []
+        dockerhub_calls = []
+        oci_calls = []
 
-        def mock_get_tags(namespace, image):
-            tag_calls.append((namespace, image))
+        def mock_dockerhub(namespace, image):
+            dockerhub_calls.append((namespace, image))
             return {"tags": [], "error": None, "http_status": None}
+
+        def mock_oci(registry, repository):
+            oci_calls.append((registry, repository))
+            return [{"name": "1.0", "digest": None, "last_updated": None}]
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml),
@@ -650,10 +655,13 @@ class TestNamespaceResolution:
         )
 
         with patch("app._fetch_manifest_info", return_value=None):
-            with patch("app._get_dockerhub_tags_rich", side_effect=mock_get_tags):
-                cmd_check(args)
+            with patch("app._get_dockerhub_tags_rich", side_effect=mock_dockerhub):
+                with patch("app._get_oci_registry_tags_rich", side_effect=mock_oci):
+                    cmd_check(args)
 
-        assert len(tag_calls) == 0
+        assert len(dockerhub_calls) == 0, "Docker Hub API must not be called for ghcr.io"
+        assert len(oci_calls) == 1
+        assert oci_calls[0] == ("ghcr.io", "cascadeguard/myapp")
 
 
 class TestRateLimitedIncrementalProgress:
@@ -741,3 +749,143 @@ class TestRateLimitedIncrementalProgress:
 
         # Both should be called — empty result with no current_tags isn't rate limiting
         assert len(call_order) == 2
+
+# ── _get_oci_registry_tags_rich ─────────────────────────────────────────────
+
+
+class TestGetOciRegistryTagsRich:
+    """Unit tests for the OCI Distribution Spec v2 tag-list fetcher."""
+
+    def _make_token_resp(self, token="testtoken"):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"token": token}).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def _make_tags_resp(self, tags, link=None):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"tags": tags}).encode()
+        resp.headers = {"Link": link} if link else {}
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_returns_rich_tag_list(self):
+        from app import _get_oci_registry_tags_rich
+        from unittest.mock import MagicMock
+
+        responses = iter([self._make_token_resp(), self._make_tags_resp(["1.0", "1.1", "2.0"])])
+
+        with patch("urllib.request.urlopen", side_effect=lambda *a, **kw: next(responses)):
+            result = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
+
+        assert len(result) == 3
+        assert all(set(t.keys()) >= {"name", "digest", "last_updated"} for t in result)
+        assert {t["name"] for t in result} == {"1.0", "1.1", "2.0"}
+
+    def test_paginates_via_link_header(self):
+        from app import _get_oci_registry_tags_rich
+        from unittest.mock import MagicMock
+
+        page1 = MagicMock()
+        page1.read.return_value = json.dumps({"tags": ["1.0", "1.1"]}).encode()
+        page1.headers = {"Link": '</v2/myorg/myimage/tags/list?last=1.1&n=100>; rel="next"'}
+        page1.__enter__ = lambda s: s
+        page1.__exit__ = MagicMock(return_value=False)
+
+        responses = iter([self._make_token_resp(), page1, self._make_tags_resp(["2.0", "2.1"])])
+
+        with patch("urllib.request.urlopen", side_effect=lambda *a, **kw: next(responses)):
+            result = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
+
+        assert {t["name"] for t in result} == {"1.0", "1.1", "2.0", "2.1"}
+
+    def test_returns_empty_on_network_error(self):
+        from app import _get_oci_registry_tags_rich
+        import urllib.error
+
+        call_count = [0]
+        resps = [self._make_token_resp(), urllib.error.URLError("refused")]
+
+        def fake_urlopen(*args, **kwargs):
+            v = resps[call_count[0]]
+            call_count[0] += 1
+            if isinstance(v, Exception):
+                raise v
+            return v
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
+
+        assert result == []
+
+    def test_quay_io_proceeds_unauthenticated_on_token_failure(self):
+        from app import _get_oci_registry_tags_rich
+        import urllib.error
+        from unittest.mock import MagicMock
+
+        call_count = [0]
+        resps = [urllib.error.URLError("refused"), self._make_tags_resp(["v1.0"])]
+
+        def fake_urlopen(*args, **kwargs):
+            v = resps[call_count[0]]
+            call_count[0] += 1
+            if isinstance(v, Exception):
+                raise v
+            return v
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _get_oci_registry_tags_rich("quay.io", "oauth2-proxy/oauth2-proxy")
+
+        assert {t["name"] for t in result} == {"v1.0"}
+
+
+# ── _get_upstream_tags_rich (dispatcher) ────────────────────────────────────
+
+
+class TestGetUpstreamTagsRich:
+    """Unit tests for the registry dispatcher."""
+
+    def test_dispatches_dockerhub_to_dockerhub_fetcher(self):
+        from app import _get_upstream_tags_rich
+
+        with patch("app._get_dockerhub_tags_rich", return_value=[{"name": "1.0", "digest": None, "last_updated": None}]) as mock_dh:
+            with patch("app._get_oci_registry_tags_rich") as mock_oci:
+                result = _get_upstream_tags_rich("docker.io", "library", "nginx")
+
+        mock_dh.assert_called_once_with("library", "nginx")
+        mock_oci.assert_not_called()
+        assert result[0]["name"] == "1.0"
+
+    def test_dispatches_empty_registry_to_dockerhub(self):
+        from app import _get_upstream_tags_rich
+
+        with patch("app._get_dockerhub_tags_rich", return_value=[]) as mock_dh:
+            with patch("app._get_oci_registry_tags_rich") as mock_oci:
+                _get_upstream_tags_rich("", "library", "postgres")
+
+        mock_dh.assert_called_once_with("library", "postgres")
+        mock_oci.assert_not_called()
+
+    def test_dispatches_ghcr_to_oci_fetcher(self):
+        from app import _get_upstream_tags_rich
+
+        with patch("app._get_dockerhub_tags_rich") as mock_dh:
+            with patch("app._get_oci_registry_tags_rich", return_value=[]) as mock_oci:
+                _get_upstream_tags_rich("ghcr.io", "bitnami", "redis")
+
+        mock_dh.assert_not_called()
+        mock_oci.assert_called_once_with("ghcr.io", "bitnami/redis")
+
+    def test_dispatches_quay_to_oci_fetcher(self):
+        from app import _get_upstream_tags_rich
+
+        with patch("app._get_dockerhub_tags_rich") as mock_dh:
+            with patch("app._get_oci_registry_tags_rich", return_value=[]) as mock_oci:
+                _get_upstream_tags_rich("quay.io", "oauth2-proxy", "oauth2-proxy")
+
+        mock_dh.assert_not_called()
+        mock_oci.assert_called_once_with("quay.io", "oauth2-proxy/oauth2-proxy")
