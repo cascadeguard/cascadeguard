@@ -1168,6 +1168,100 @@ def _get_dockerhub_tags_rich(namespace: str, image: str) -> Dict:
     return {"tags": tags, "error": None, "http_status": None}
 
 
+def _get_oci_registry_tags_rich(registry: str, repository: str) -> List[Dict]:
+    """Fetch all tags for an OCI-compliant registry (ghcr.io, quay.io, etc.).
+
+    Uses the OCI Distribution Spec v2 ``/v2/{repository}/tags/list`` endpoint
+    with pagination (RFC 5988 Link header).  Returns a list of dicts in the
+    same format as ``_get_dockerhub_tags_rich``::
+
+        [{"name": "1.0", "digest": None, "last_updated": None}, ...]
+
+    Handles anonymous auth and bearer token auth for ghcr.io
+    (``GHCR_TOKEN`` / ``GITHUB_TOKEN`` env vars) and generic OCI token
+    endpoint for other registries.  Returns ``[]`` on error.
+    """
+    import time
+
+    registry_base = f"https://{registry}"
+    bearer = ""
+    try:
+        if registry == "ghcr.io":
+            ghcr_token = os.environ.get("GHCR_TOKEN") or os.environ.get("GITHUB_TOKEN")
+            creds = f":{ghcr_token}" if ghcr_token else None
+            auth_url = f"https://ghcr.io/token?service=ghcr.io&scope=repository:{repository}:pull"
+            req = urllib.request.Request(auth_url)
+            if creds:
+                import base64
+                req.add_header("Authorization", f"Basic {base64.b64encode(creds.encode()).decode()}")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            bearer = data.get("token") or data.get("access_token") or ""
+        else:
+            auth_url = f"{registry_base}/v2/token?service={registry}&scope=repository:{repository}:pull"
+            try:
+                with urllib.request.urlopen(auth_url, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                bearer = data.get("token") or data.get("access_token") or ""
+            except Exception:
+                pass  # Proceed unauthenticated (public images on quay.io, etc.)
+    except Exception as exc:
+        logger.debug(f"OCI auth for {registry}/{repository} skipped: {exc}")
+
+    tags: List[Dict] = []
+    url: Optional[str] = f"{registry_base}/v2/{repository}/tags/list?n=100"
+    page = 0
+    while url and page < 10:
+        try:
+            req = urllib.request.Request(url)
+            if bearer:
+                req.add_header("Authorization", f"Bearer {bearer}")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                link_header = resp.headers.get("Link", "")
+        except Exception as exc:
+            logger.warning(f"Could not fetch tags for {registry}/{repository}: {exc}")
+            break
+
+        for tag_name in (data.get("tags") or []):
+            tags.append({"name": tag_name, "digest": None, "last_updated": None})
+        page += 1
+
+        next_url = None
+        if link_header:
+            for part in link_header.split(","):
+                part = part.strip()
+                if 'rel="next"' in part:
+                    start, end = part.find("<"), part.find(">")
+                    if start != -1 and end != -1:
+                        next_url = part[start + 1:end]
+                        if next_url.startswith("/"):
+                            next_url = f"{registry_base}{next_url}"
+                        break
+        url = next_url
+        if url:
+            time.sleep(0.2)
+
+    return tags
+
+
+def _get_upstream_tags_rich(registry: str, namespace: str, image: str) -> Dict:
+    """Dispatch rich tag fetching to the appropriate registry implementation.
+
+    - ``docker.io`` / empty → Docker Hub API (returns digest + last_updated)
+    - ``ghcr.io``, ``quay.io``, other OCI registries → OCI v2 tags/list
+
+    Returns the same structured dict as ``_get_dockerhub_tags_rich``::
+
+        {"tags": [...], "error": None | "not_found" | "rate_limited" | "network_error", "http_status": ...}
+    """
+    if registry in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
+        return _get_dockerhub_tags_rich(namespace, image)
+    repository = f"{namespace}/{image}" if namespace else image
+    tags = _get_oci_registry_tags_rich(registry, repository)
+    return {"tags": tags, "error": None, "http_status": None}
+
+
 def _is_stable_tag(tag: str) -> bool:
     """Return True if *tag* looks like a stable release (not RC/nightly/etc.)."""
     skip = {"latest", "edge", "nightly", "testing"}
@@ -1793,9 +1887,6 @@ def cmd_check(args) -> int:
             continue
         if image_filter and name != image_filter:
             continue
-        registry = image.get("registry", "")
-        if registry and registry not in ("docker.io", "registry-1.docker.io", "index.docker.io", ""):
-            continue
         # Read lastChecked from image state if available
         img_state_file = images_dir / f"{name}.yaml"
         last_checked = "9999"  # default: check last
@@ -1818,6 +1909,7 @@ def cmd_check(args) -> int:
         name = image.get("name")
         img_name = image.get("image", name)
         namespace = image.get("namespace", "library")
+        registry = image.get("registry", "")
 
         full_name = image.get("full_name", "")
         if full_name and "/" in full_name:
@@ -1843,7 +1935,7 @@ def cmd_check(args) -> int:
         # otherwise fall back to known tags from state file
         current_tags: Set[str] = set(image.get("latest_stable_tags", [])) or known_tag_names
 
-        upstream_result = _get_dockerhub_tags_rich(tag_namespace, tag_image)
+        upstream_result = _get_upstream_tags_rich(registry, tag_namespace, tag_image)
         upstream_tags_rich = upstream_result.get("tags", [])
         upstream_tag_names = [t["name"] for t in upstream_tags_rich]
         fetch_error = upstream_result.get("error")
