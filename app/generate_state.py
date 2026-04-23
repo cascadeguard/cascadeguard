@@ -31,6 +31,39 @@ def load_config(output_dir: Path) -> dict:
     return {}
 
 
+def merge_defaults(images: list, config: dict) -> list:
+    """Apply repo-level defaults from .cascadeguard.yaml to each image.
+
+    Per-image values always take precedence over config defaults.
+    Only these keys are inherited: registry, repository, local.dir.
+    Does NOT mutate the input list or its dicts.
+    """
+    defaults = config.get("defaults", {})
+    if not defaults:
+        return [dict(img) for img in images]
+
+    default_registry = defaults.get("registry")
+    default_repository = defaults.get("repository")
+    default_local = defaults.get("local", {})
+    default_local_dir = default_local.get("dir")
+
+    result = []
+    for img in images:
+        merged = dict(img)
+        if "registry" not in merged and default_registry:
+            merged["registry"] = default_registry
+        if "repository" not in merged and default_repository:
+            merged["repository"] = default_repository
+        if default_local_dir:
+            img_local = merged.get("local", {})
+            if "dir" not in img_local:
+                merged_local = dict(img_local)
+                merged_local["dir"] = default_local_dir
+                merged["local"] = merged_local
+        result.append(merged)
+    return result
+
+
 def resolve_tagging(image: dict, config: dict) -> dict:
     """
     Resolve tagging configuration by merging repo-level defaults with
@@ -856,8 +889,9 @@ def main():
     images = load_images_yaml(args.images_yaml)
     print(f"Found {len(images)} images in {args.images_yaml}")
 
-    # Load repo-level config (.cascadeguard.yaml)
+    # Load repo-level config (.cascadeguard.yaml) and apply defaults
     config = load_config(args.output_dir)
+    images = merge_defaults(images, config)
 
     # Generate state for each image
     success_count = 0
