@@ -549,6 +549,70 @@ class TestGenerateBuildWorkflow:
         assert result2 is False
 
 
+class TestMergeDefaultsInGenerateState:
+    """Tests that generate_state.merge_defaults applies .cascadeguard.yaml defaults."""
+
+    def setup_method(self):
+        from generate_state import merge_defaults
+        self.merge_defaults = merge_defaults
+
+    def test_no_defaults_section_returns_copies(self):
+        images = [{"name": "app", "registry": "ghcr.io"}]
+        result = self.merge_defaults(images, {})
+        assert result == images
+        assert result is not images  # returns copies
+
+    def test_default_registry_applied(self):
+        images = [{"name": "app"}]
+        config = {"defaults": {"registry": "ghcr.io/myorg"}}
+        result = self.merge_defaults(images, config)
+        assert result[0]["registry"] == "ghcr.io/myorg"
+
+    def test_per_image_registry_wins(self):
+        images = [{"name": "app", "registry": "docker.io"}]
+        config = {"defaults": {"registry": "ghcr.io/myorg"}}
+        result = self.merge_defaults(images, config)
+        assert result[0]["registry"] == "docker.io"
+
+    def test_default_local_dir_applied(self):
+        images = [{"name": "app"}]
+        config = {"defaults": {"local": {"dir": "images"}}}
+        result = self.merge_defaults(images, config)
+        assert result[0]["local"]["dir"] == "images"
+
+    def test_per_image_local_dir_wins(self):
+        images = [{"name": "app", "local": {"dir": "custom/path"}}]
+        config = {"defaults": {"local": {"dir": "images"}}}
+        result = self.merge_defaults(images, config)
+        assert result[0]["local"]["dir"] == "custom/path"
+
+    def test_local_dir_default_does_not_overwrite_other_local_keys(self):
+        images = [{"name": "app", "local": {"patchFiles": ["a.patch"]}}]
+        config = {"defaults": {"local": {"dir": "images"}}}
+        result = self.merge_defaults(images, config)
+        assert result[0]["local"]["dir"] == "images"
+        assert result[0]["local"]["patchFiles"] == ["a.patch"]
+
+    def test_default_repository_applied(self):
+        images = [{"name": "app"}]
+        config = {"defaults": {"repository": "myorg/app"}}
+        result = self.merge_defaults(images, config)
+        assert result[0]["repository"] == "myorg/app"
+
+    def test_does_not_mutate_input(self):
+        original = {"name": "app"}
+        images = [original]
+        config = {"defaults": {"registry": "ghcr.io/myorg", "local": {"dir": "images"}}}
+        self.merge_defaults(images, config)
+        assert "registry" not in original
+        assert "local" not in original
+
+    def test_empty_defaults_section_is_noop(self):
+        images = [{"name": "app"}]
+        result = self.merge_defaults(images, {"defaults": {}})
+        assert result[0] == {"name": "app"}
+
+
 class TestActionsPinner:
     """Unit tests for ActionsPinner."""
 
