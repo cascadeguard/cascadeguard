@@ -1168,6 +1168,113 @@ def _get_dockerhub_tags_rich(namespace: str, image: str) -> Dict:
     return {"tags": tags, "error": None, "http_status": None}
 
 
+# ---------------------------------------------------------------------------
+# Docker Hub repository-level stats (pull_count / star_count)
+# ---------------------------------------------------------------------------
+
+_DOCKER_HUB_REPO_URL = "https://hub.docker.com/v2/repositories/{namespace}/{image}"
+
+_SNAPSHOT_HISTORY_MAX = 52  # keep up to ~1 year of weekly entries
+_SNAPSHOT_WEEKDAY = 0  # Monday (0=Mon … 6=Sun)
+_SNAPSHOT_FALLBACK_DAYS = 6  # take snapshot if last was >6 days ago
+
+
+def _get_dockerhub_repo_stats(namespace: str, image: str) -> Dict:
+    """Fetch repository-level pull_count and star_count from Docker Hub.
+
+    Returns::
+
+        {"pull_count": int | None, "star_count": int | None,
+         "error": None | "not_found" | "rate_limited" | "network_error",
+         "http_status": int | None}
+    """
+    url = _DOCKER_HUB_REPO_URL.format(namespace=namespace, image=image)
+    hub_auth = _get_dockerhub_token()
+    try:
+        req = urllib.request.Request(url)
+        if hub_auth:
+            req.add_header("Authorization", hub_auth)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return {
+            "pull_count": data.get("pull_count"),
+            "star_count": data.get("star_count"),
+            "error": None,
+            "http_status": None,
+        }
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        if code == 404:
+            return {"pull_count": None, "star_count": None, "error": "not_found", "http_status": 404}
+        elif code == 429:
+            return {"pull_count": None, "star_count": None, "error": "rate_limited", "http_status": 429}
+        else:
+            return {"pull_count": None, "star_count": None, "error": "network_error", "http_status": code}
+    except Exception as exc:
+        logger.warning(f"Could not fetch repo stats for {namespace}/{image}: {exc}")
+        return {"pull_count": None, "star_count": None, "error": "network_error", "http_status": None}
+
+
+def _should_take_weekly_snapshot(img_state: Dict) -> bool:
+    """Return True if a download/star snapshot should be taken now.
+
+    Snapshot when:
+    - Today is the configured weekday (Monday by default), OR
+    - No snapshot has been taken yet, OR
+    - Last snapshot was taken more than _SNAPSHOT_FALLBACK_DAYS days ago
+      (catch-up for missed runs).
+    """
+    history = img_state.get("downloadHistory") or []
+    if not history:
+        return True
+
+    last_entry = history[-1]
+    last_observed = last_entry.get("observedAt")
+    if not last_observed:
+        return True
+
+    try:
+        last_dt = datetime.fromisoformat(last_observed.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return True
+
+    now_dt = datetime.now(timezone.utc)
+    days_since = (now_dt - last_dt).days
+
+    if days_since > _SNAPSHOT_FALLBACK_DAYS:
+        return True  # fallback: missed run
+    if now_dt.weekday() == _SNAPSHOT_WEEKDAY and days_since >= 1:
+        return True  # scheduled weekday (guard >=1 day to avoid double-fire)
+    return False
+
+
+def _apply_download_snapshot(img_state: Dict, pull_count: Optional[int], star_count: Optional[int],
+                              observed_at: str) -> None:
+    """Mutate *img_state* in-place: append snapshot entry and compute weeklyDownloads."""
+    # --- downloadHistory ---
+    dl_history: List[Dict] = list(img_state.get("downloadHistory") or [])
+    dl_history.append({"pullCount": pull_count, "observedAt": observed_at})
+    dl_history = dl_history[-_SNAPSHOT_HISTORY_MAX:]
+    img_state["downloadHistory"] = dl_history
+
+    # Compute weeklyDownloads: delta between latest and previous snapshot
+    if len(dl_history) >= 2:
+        latest_pull = dl_history[-1].get("pullCount")
+        prev_pull = dl_history[-2].get("pullCount")
+        if latest_pull is not None and prev_pull is not None and latest_pull >= prev_pull:
+            img_state["weeklyDownloads"] = latest_pull - prev_pull
+        else:
+            img_state["weeklyDownloads"] = None
+    else:
+        img_state["weeklyDownloads"] = None
+
+    # --- starHistory ---
+    star_history: List[Dict] = list(img_state.get("starHistory") or [])
+    star_history.append({"starCount": star_count, "observedAt": observed_at})
+    star_history = star_history[-_SNAPSHOT_HISTORY_MAX:]
+    img_state["starHistory"] = star_history
+
+
 def _get_oci_registry_tags_rich(registry: str, repository: str) -> List[Dict]:
     """Fetch all tags for an OCI-compliant registry (ghcr.io, quay.io, etc.).
 
@@ -2031,6 +2138,17 @@ def cmd_check(args) -> int:
                 "status": "new-tags",
                 "new_tags": sorted(actually_new),
             })
+
+        # ── Weekly download/star snapshot (Docker Hub only) ────────────────
+        # Piggybacks on the existing check flow — no extra calls on non-snapshot days.
+        if not registry or registry in ("docker.io", "registry-1.docker.io", "index.docker.io"):
+            if _should_take_weekly_snapshot(img_state):
+                stats = _get_dockerhub_repo_stats(tag_namespace, tag_image)
+                if stats["error"] == "rate_limited":
+                    logger.warning(f"  {name}: rate limited fetching repo stats — skipping snapshot")
+                elif stats["error"] is None or stats["pull_count"] is not None:
+                    _apply_download_snapshot(img_state, stats["pull_count"], stats["star_count"], now_iso)
+                    logger.info(f"  {name}: snapshot pull_count={stats['pull_count']} star_count={stats['star_count']}")
 
         # Write updated state back
         with open(img_state_file, "w") as f:
