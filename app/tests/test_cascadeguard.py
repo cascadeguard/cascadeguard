@@ -363,7 +363,8 @@ class TestCmdCheck:
 
     # ── drift detected ───────────────────────────────────────────────────────
 
-    def test_drift_base_image_returns_1(self, tmp_path):
+    def test_drift_base_image_returns_2(self, tmp_path):
+        # Drift = "updates available" → exit 2 (not a genuine error).
         images_yaml, state_dir = self._setup_repo(tmp_path,
             [{"name": "myapp", "dockerfile": "images/myapp/Dockerfile", "image": "myapp", "tag": "latest", "registry": "ghcr.io"}],
             {"images/myapp/Dockerfile": "FROM node:22\nRUN echo hello\n"})
@@ -371,7 +372,7 @@ class TestCmdCheck:
 
         with patch("app._fetch_manifest_info", return_value={"digest": DIGEST_B, "publishedAt": None}):
             rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
-        assert rc == 1
+        assert rc == 2
 
     def test_drift_table_output(self, tmp_path, capsys):
         images_yaml, state_dir = self._setup_repo(tmp_path,
