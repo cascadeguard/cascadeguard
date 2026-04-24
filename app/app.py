@@ -2271,7 +2271,10 @@ def cmd_check(args) -> int:
             print(f"  ✗ {err}", file=sys.stderr)
         return 1
 
-    return 1 if (has_drift or has_new_tags) else 0
+    # Exit 2 = updates available (new tags/drift detected — informational, not an error).
+    # Exit 1 = genuine error (config problem, promotion failure, etc.).
+    # Exit 0 = no updates.
+    return 2 if (has_drift or has_new_tags) else 0
 
 
 def cmd_build(args) -> int:
