@@ -4,7 +4,9 @@
 import json
 import os
 import stat
+import subprocess
 import sys
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -162,4 +164,35 @@ class TestRunHooks:
         }
         state = {"y": 2}
         result = _run_hooks("post-image-check", config, tmp_path, {}, state, {})
+        assert result == state
+
+    def test_path_traversal_rejected(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        _make_hook(outside, "evil.sh", "echo '{\"pwned\": true}'")
+        config = {
+            "hooks": {
+                "post-image-check": [{"path": "../outside/evil.sh"}]
+            }
+        }
+        state = {"x": 1}
+        result = _run_hooks("post-image-check", config, repo_root, {}, state, {})
+        assert "pwned" not in result
+        assert result == state
+
+    def test_hook_timeout_is_warning_not_error(self, tmp_path):
+        _make_hook(tmp_path, "slow.sh", "sleep 999")
+        config = {
+            "hooks": {
+                "post-image-check": [{"path": "slow.sh"}]
+            }
+        }
+        state = {"y": 2}
+        with unittest.mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="slow.sh", timeout=30),
+        ):
+            result = _run_hooks("post-image-check", config, tmp_path, {}, state, {})
         assert result == state

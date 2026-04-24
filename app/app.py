@@ -785,6 +785,9 @@ def _run_hooks(
             continue
 
         hook_path = repo_root / hook_path_raw
+        if not hook_path.resolve().is_relative_to(repo_root.resolve()):
+            print(f"  hook path outside repo root: {hook_path_raw} — skipping", file=sys.stderr)
+            continue
         if not hook_path.exists():
             print(f"  hook not found: {hook_path} — skipping", file=sys.stderr)
             continue
