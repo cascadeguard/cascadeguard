@@ -748,6 +748,95 @@ def load_config(repo_root: Path) -> dict:
     return data
 
 
+def _run_hooks(
+    hook_point: str,
+    config: dict,
+    repo_root: Path,
+    image: dict,
+    state: dict,
+    registry_response: dict,
+) -> dict:
+    """Invoke configured hooks for *hook_point*, return merged state.
+
+    Each hook executable receives JSON on stdin and writes a JSON object to
+    stdout. Outputs are shallow-merged into *state* in order. Hook failures
+    emit a warning and the check continues.
+    """
+    hook_entries = config.get("hooks", {}).get(hook_point, [])
+    if not hook_entries:
+        return state
+
+    image_registry = image.get("registry", "")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    merged = dict(state)
+
+    for entry in hook_entries:
+        if not isinstance(entry, dict):
+            print(f"  hook config: entry must be a mapping — skipping", file=sys.stderr)
+            continue
+
+        hook_path_raw = entry.get("path")
+        if not hook_path_raw:
+            print("  hook config: missing 'path' — skipping entry", file=sys.stderr)
+            continue
+
+        registries_filter = entry.get("registries")
+        if registries_filter and image_registry not in registries_filter:
+            continue
+
+        hook_path = repo_root / hook_path_raw
+        if not hook_path.exists():
+            print(f"  hook not found: {hook_path} — skipping", file=sys.stderr)
+            continue
+
+        stdin_payload = json.dumps({
+            "hookPoint": hook_point,
+            "image": image,
+            "state": merged,
+            "registryResponse": registry_response,
+            "timestamp": timestamp,
+        })
+
+        try:
+            result = subprocess.run(
+                [str(hook_path)],
+                input=stdin_payload,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(repo_root),
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  hook timed out (30s): {hook_path_raw}", file=sys.stderr)
+            continue
+        except Exception as exc:
+            print(f"  hook error ({hook_path_raw}): {exc}", file=sys.stderr)
+            continue
+
+        if result.returncode != 0:
+            snippet = result.stderr.strip()[:200]
+            print(f"  hook exit {result.returncode} ({hook_path_raw}): {snippet}", file=sys.stderr)
+            continue
+
+        stdout = result.stdout.strip()
+        if not stdout:
+            continue
+
+        try:
+            patch = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            print(f"  hook output not valid JSON ({hook_path_raw}): {exc}", file=sys.stderr)
+            continue
+
+        if not isinstance(patch, dict):
+            print(f"  hook output must be a JSON object ({hook_path_raw}) — skipping", file=sys.stderr)
+            continue
+
+        merged.update(patch)
+
+    return merged
+
+
 def merge_defaults(images: list, config: dict) -> list:
     """Apply repo-level defaults from .cascadeguard.yaml to each image.
 
@@ -2031,6 +2120,16 @@ def cmd_check(args) -> int:
                 "status": "new-tags",
                 "new_tags": sorted(actually_new),
             })
+
+        # Run post-image-check hooks (may extend img_state before persistence)
+        img_state = _run_hooks(
+            "post-image-check",
+            config,
+            repo_root,
+            image,
+            img_state,
+            upstream_result,
+        )
 
         # Write updated state back
         with open(img_state_file, "w") as f:
