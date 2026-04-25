@@ -16,6 +16,7 @@ Commands:
   actions pin           Pin GitHub Actions refs to full commit SHAs
   actions audit         Audit workflow files against an actions-policy.yaml
   actions policy init   Scaffold a starter actions-policy.yaml
+  tools check           Check CI/CD tool version drift
 """
 import argparse
 import json
@@ -2968,6 +2969,12 @@ def cmd_images(args) -> int:
     }[args.images_command](args)
 
 
+def cmd_tools(args) -> int:
+    """Dispatch 'tools' subcommands."""
+    from tools_check import cmd_tools_check
+    return {"check": cmd_tools_check}[args.tools_command](args)
+
+
 def cmd_pipeline_run(args) -> int:
     """Alias for the full pipeline runner (was cmd_pipeline)."""
     return cmd_pipeline(args)
@@ -3398,6 +3405,46 @@ Commands:
         help="Overwrite existing policy file",
     )
 
+    # ---------------------------------------------------------------------------
+    # tools — CI/CD tool lifecycle management
+    # ---------------------------------------------------------------------------
+    tools = sub.add_parser("tools", help="CI/CD tool lifecycle management")
+    tools.add_argument(
+        "--tools-yaml",
+        default="tools.yaml",
+        help="Path to tools.yaml (default: tools.yaml)",
+    )
+    tools.add_argument(
+        "--state-dir",
+        default=".cascadeguard",
+        help="Path to state directory (default: .cascadeguard)",
+    )
+    tools_sub = tools.add_subparsers(dest="tools_command", metavar="subcommand")
+    tools_sub.required = True
+
+    # tools check
+    tools_check_parser = tools_sub.add_parser(
+        "check",
+        help="Query registries for version drift on enrolled tools",
+    )
+    tools_check_parser.add_argument(
+        "--tool",
+        default=None,
+        help="Scope check to a single tool name",
+    )
+    tools_check_parser.add_argument(
+        "--format",
+        choices=["json", "table"],
+        default="table",
+        help="Output format: table (default) or json",
+    )
+    tools_check_parser.add_argument(
+        "--no-commit",
+        action="store_true",
+        default=False,
+        help="Dry run — skip git commit/push operations",
+    )
+
     # scan
     scan = sub.add_parser("scan", help="Discover and analyse container artifacts in a repository")
     scan.add_argument(
@@ -3446,6 +3493,7 @@ def main() -> int:
         "vuln":     cmd_vuln,
         "actions":  cmd_actions,
         "scan":     cmd_scan,
+        "tools":    cmd_tools,
     }
 
     return commands[args.command](args)
