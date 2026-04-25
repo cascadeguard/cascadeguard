@@ -17,6 +17,7 @@ Commands:
   actions audit         Audit workflow files against an actions-policy.yaml
   actions policy init   Scaffold a starter actions-policy.yaml
   tools check           Check CI/CD tool version drift
+  tools enroll          Detect CI/CD tools from pipeline manifests and enroll in tools.yaml
 """
 import argparse
 import json
@@ -2972,7 +2973,8 @@ def cmd_images(args) -> int:
 def cmd_tools(args) -> int:
     """Dispatch 'tools' subcommands."""
     from tools_check import cmd_tools_check
-    return {"check": cmd_tools_check}[args.tools_command](args)
+    from tools_enroll import cmd_tools_enroll
+    return {"check": cmd_tools_check, "enroll": cmd_tools_enroll}[args.tools_command](args)
 
 
 def cmd_pipeline_run(args) -> int:
@@ -3443,6 +3445,30 @@ Commands:
         action="store_true",
         default=False,
         help="Dry run — skip git commit/push operations",
+    )
+
+    # tools enroll
+    tools_enroll_parser = tools_sub.add_parser(
+        "enroll",
+        help="Detect CI/CD tools from pipeline manifests and add to tools.yaml",
+    )
+    tools_enroll_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Directory to scan (default: current directory)",
+    )
+    tools_enroll_parser.add_argument(
+        "--platform",
+        choices=["auto", "github-actions", "gitlab-ci"],
+        default="auto",
+        help="CI platform to detect (default: auto)",
+    )
+    tools_enroll_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Print discovered tools without modifying tools.yaml",
     )
 
     # scan
