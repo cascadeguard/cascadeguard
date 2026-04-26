@@ -3,6 +3,7 @@
 
 import json
 import os
+import stat
 import sys
 import pytest
 import yaml
@@ -820,6 +821,71 @@ class TestCmdCheck:
         assert len(call_order) == 2
         assert call_order[0] == "zookeeper", f"Expected zookeeper first, got {call_order}"
         assert call_order[1] == "fluent-bit", f"Expected fluent-bit second, got {call_order}"
+
+    def test_post_image_check_hook_fires_and_state_is_persisted(self, tmp_path):
+        """End-to-end: cg images check with a hook configured in .cascadeguard.yaml.
+
+        Verifies that the hook executes as part of the check flow and that its
+        output is shallow-merged into the image state file on disk.
+        """
+        # Arrange — repo layout
+        images_yaml, state_dir = self._setup_repo(tmp_path, [
+            {
+                "name": "nginx",
+                "image": "nginx",
+                "namespace": "library",
+                "full_name": "library/nginx",
+                "registry": "docker.io",
+                "tag": "1.27",
+            }
+        ])
+
+        # Hook script: emit a JSON patch with weeklyDownloads
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        hook = hooks_dir / "weekly-stats.sh"
+        hook.write_text("#!/bin/sh\necho '{\"weeklyDownloads\": 999}'\n")
+        hook.chmod(hook.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+        # .cascadeguard.yaml wires the hook
+        (tmp_path / ".cascadeguard.yaml").write_text(yaml.dump({
+            "hooks": {
+                "post-image-check": [{"path": "hooks/weekly-stats.sh"}]
+            }
+        }))
+
+        # Pre-seed state so tag 1.27 is already known (avoids "new-tags" exit code)
+        images_dir = Path(state_dir) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "nginx.yaml").write_text(yaml.dump({
+            "name": "nginx",
+            "lastChecked": "2026-04-01T00:00:00+00:00",
+            "upstreamTags": {
+                "1.27": {"digest": "sha256:aaa", "firstSeen": "2026-04-01T00:00:00+00:00",
+                         "lastSeen": "2026-04-01T00:00:00+00:00", "lastUpdated": None},
+            },
+        }))
+
+        fake_tags = [
+            {"name": "1.27", "digest": "sha256:aaa", "last_updated": "2026-04-01T00:00:00Z"},
+        ]
+
+        # Act
+        with patch("app._fetch_manifest_info", return_value=None), \
+             patch("app._get_dockerhub_tags_rich",
+                   return_value={"tags": fake_tags, "error": None, "http_status": None}):
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        assert rc == 0, f"cmd_check exited {rc} — unexpected error"
+
+        # Assert — hook output merged into the state file
+        state_file = Path(state_dir) / "images" / "nginx.yaml"
+        assert state_file.exists(), "State file not created after check"
+        with open(state_file) as f:
+            persisted = yaml.safe_load(f)
+        assert persisted.get("weeklyDownloads") == 999, (
+            f"Hook output not persisted. State: {persisted}"
+        )
 
 
 # ---------------------------------------------------------------------------
