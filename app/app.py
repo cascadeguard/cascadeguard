@@ -1844,18 +1844,30 @@ def _run_git(cwd: Path, args: List[str]):
     subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True)
 
 
-def _commit_state_changes(repo_root: Path, state_dir: Path, destination: str) -> bool:
-    """Commit state file changes to main or via PR.
+def _commit_state_changes(
+    repo_root: Path,
+    state_dir: Path,
+    destination: str,
+    ci_platform: str = "github",
+) -> bool:
+    """Commit state file changes to main or via PR/MR.
 
     Args:
         repo_root: Repository root.
         state_dir: Path to .cascadeguard/ state directory.
-        destination: "main" to commit directly, "pr" to open a PR.
+        destination: "main" to commit directly, "pr" to open a PR/MR.
+        ci_platform: "github" (default) or "gitlab".
 
     Returns True if changes were committed.
     """
+    is_gitlab = ci_platform == "gitlab"
+    bot_email = (
+        "cascadeguard[bot]@users.noreply.gitlab.com"
+        if is_gitlab
+        else "cascadeguard[bot]@users.noreply.github.com"
+    )
     _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
-    _run_git(repo_root, ["config", "user.email", "cascadeguard[bot]@users.noreply.github.com"])
+    _run_git(repo_root, ["config", "user.email", bot_email])
 
     # Stage state files
     try:
@@ -1891,21 +1903,60 @@ def _commit_state_changes(repo_root: Path, state_dir: Path, destination: str) ->
         _run_git(repo_root, ["commit", "-m", commit_msg])
         _run_git(repo_root, ["push", "-u", "origin", branch, "--force"])
 
-        if shutil.which("gh"):
-            result = subprocess.run(
-                [
-                    "gh", "pr", "create",
-                    "--title", f"chore(state): update image state {scan_date}",
-                    "--body", "Automated state file update from `cascadeguard images check`.",
-                    "--base", "main",
-                    "--head", branch,
-                ],
-                cwd=repo_root, capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                print(f"  State PR created: {result.stdout.strip()}", file=sys.stderr)
+        pr_title = f"chore(state): update image state {scan_date}"
+        pr_body = "Automated state file update from `cascadeguard images check`."
+
+        if is_gitlab:
+            token = os.environ.get("CI_JOB_TOKEN") or os.environ.get("GITLAB_TOKEN")
+            project_id = os.environ.get("CI_PROJECT_ID") or os.environ.get("CI_PROJECT_PATH")
+            server_url = os.environ.get("CI_SERVER_URL", "https://gitlab.com")
+            if token and project_id:
+                encoded = urllib.parse.quote(str(project_id), safe="")
+                data, err = _gitlab_api(
+                    "POST",
+                    f"projects/{encoded}/merge_requests",
+                    token,
+                    server_url,
+                    {
+                        "title": pr_title,
+                        "description": pr_body,
+                        "source_branch": branch,
+                        "target_branch": "main",
+                    },
+                )
+                if data:
+                    print(f"  State MR created: {data.get('web_url', '')}", file=sys.stderr)
+                else:
+                    print(f"  Warning: State MR creation failed: {err}", file=sys.stderr)
             else:
-                print(f"  Warning: State PR creation failed: {result.stderr.strip()}", file=sys.stderr)
+                print(
+                    "  Warning: CI_JOB_TOKEN/GITLAB_TOKEN or CI_PROJECT_ID not set; skipping state MR.",
+                    file=sys.stderr,
+                )
+        else:
+            token = os.environ.get("GITHUB_TOKEN")
+            repo = _github_repo(repo_root)
+            if token and repo:
+                data, err = _github_api(
+                    "POST",
+                    f"https://api.github.com/repos/{repo}/pulls",
+                    token,
+                    {
+                        "title": pr_title,
+                        "body": pr_body,
+                        "base": "main",
+                        "head": branch,
+                    },
+                )
+                if data:
+                    print(f"  State PR created: {data.get('html_url', '')}", file=sys.stderr)
+                else:
+                    print(f"  Warning: State PR creation failed: {err}", file=sys.stderr)
+            else:
+                print(
+                    "  Warning: GITHUB_TOKEN or repo not found; skipping state PR.",
+                    file=sys.stderr,
+                )
 
         _run_git(repo_root, ["checkout", "main"])
         return True
@@ -1953,6 +2004,7 @@ def cmd_check(args) -> int:
     do_promote = promote_flag if promote_flag is not None else check_config["promote"]["enabled"]
     promote_destination = check_config["promote"]["destination"]
     state_destination = check_config["state"]["destination"]
+    ci_platform = config.get("ci", {}).get("platform", "github")
 
     if no_commit:
         state_destination = "none"
@@ -2415,7 +2467,7 @@ def cmd_check(args) -> int:
     # ── Phase 6: Commit state changes ─────────────────────────────────────
     if state_destination != "none":
         try:
-            _commit_state_changes(repo_root, state_dir, state_destination)
+            _commit_state_changes(repo_root, state_dir, state_destination, ci_platform)
         except Exception as exc:
             print(f"  Warning: state commit failed: {exc}", file=sys.stderr)
 
@@ -2492,7 +2544,6 @@ def cmd_check(args) -> int:
     pr_urls: List[str] = []
     pr_errors: List[str] = []
     if promoted and promote_destination == "pr":
-        ci_platform = config.get("ci", {}).get("platform", "github")
         pr_urls, pr_errors = _create_promotion_pr(repo_root, promoted, quarantine_hours_map, ci_platform)
     elif promoted and promote_destination == "main":
         try:

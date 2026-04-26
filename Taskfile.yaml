@@ -198,7 +198,7 @@ tasks:
           if [ -n "$CI" ]; then
             python -m pytest tests/test_app.py tests/test_cascadeguard.py tests/test_hooks.py tests/test_scan.py tests/test_scan_issues_api.py tests/test_actions_policy.py tests/test_tools_check.py tests/test_tools_enroll.py tests/test_promotion_pr_api.py -v
           else
-            .venv/bin/python -m pytest tests/test_app.py tests/test_cascadeguard.py tests/test_hooks.py tests/test_scan.py tests/test_scan_issues_api.py tests/test_actions_policy.py tests/test_tools_check.py tests/test_tools_enroll.py -v
+            .venv/bin/python -m pytest tests/test_app.py tests/test_cascadeguard.py tests/test_hooks.py tests/test_scan.py tests/test_scan_issues_api.py tests/test_actions_policy.py tests/test_tools_check.py tests/test_tools_enroll.py tests/test_promotion_pr_api.py -v
           fi
 
   cdk8s:test:unit:
