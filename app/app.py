@@ -1554,6 +1554,49 @@ def _gitlab_api(
         return None, str(exc)
 
 
+def _github_api(
+    method: str,
+    url: str,
+    token: str,
+    data: Optional[Dict] = None,
+) -> Tuple[Optional[Dict], Optional[str]]:
+    """Make a GitHub REST API call. Returns (response_dict, error_string)."""
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read()), None
+    except urllib.error.HTTPError as exc:
+        return None, f"HTTP {exc.code}: {exc.read().decode()[:200]}"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _github_repo(repo_root: Path) -> Optional[str]:
+    """Return 'owner/repo' from GITHUB_REPOSITORY env var or git remote URL."""
+    if os.environ.get("GITHUB_REPOSITORY"):
+        return os.environ["GITHUB_REPOSITORY"]
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_root, capture_output=True, text=True, check=True,
+        )
+        m = re.search(r"github\.com[:/](.+?)(?:\.git)?$", result.stdout.strip())
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
 def _create_promotion_pr(
     repo_root: Path,
     promoted: List[Dict],
@@ -1582,9 +1625,12 @@ def _create_promotion_pr(
             return [], []
         gl_project_enc = urllib.parse.quote(str(gl_project), safe="")
     else:
-        if shutil.which("gh") is None:
-            print("Warning: 'gh' CLI not found — skipping PR creation", file=sys.stderr)
+        gh_token = os.environ.get("GITHUB_TOKEN", "")
+        gh_repo = _github_repo(repo_root)
+        if not (gh_token and gh_repo):
+            print("Warning: GITHUB_TOKEN not set — skipping PR creation", file=sys.stderr)
             return [], []
+        gh_owner = gh_repo.split("/")[0]
 
     # Configure git once
     bot_email = (
@@ -1623,13 +1669,15 @@ def _create_promotion_pr(
             )
             if resp and isinstance(resp, list) and resp:
                 existing_pr = str(resp[0]["iid"])
-        elif shutil.which("gh"):
-            check_result = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,title", "--jq", ".[0].number"],
-                cwd=repo_root, capture_output=True, text=True,
+        else:
+            resp, _ = _github_api(
+                "GET",
+                f"https://api.github.com/repos/{gh_repo}/pulls"
+                f"?head={urllib.parse.quote(gh_owner + ':' + branch, safe='')}&state=open&per_page=1",
+                gh_token,
             )
-            if check_result.returncode == 0 and check_result.stdout.strip():
-                existing_pr = check_result.stdout.strip()
+            if resp and isinstance(resp, list) and resp:
+                existing_pr = str(resp[0]["number"])
 
         # Create or update branch
         if existing_pr:
@@ -1754,36 +1802,37 @@ def _create_promotion_pr(
         elif existing_pr:
             # Update existing GitHub PR — push new commit and add comment
             _run_git(repo_root, ["push", "origin", branch])
-            subprocess.run(
-                ["gh", "pr", "comment", existing_pr, "--body", update_comment],
-                cwd=repo_root, capture_output=True, text=True,
+            _github_api(
+                "POST",
+                f"https://api.github.com/repos/{gh_repo}/issues/{existing_pr}/comments",
+                gh_token,
+                {"body": update_comment},
             )
             pr_urls.append(f"#{existing_pr} (updated)")
             print(f"  PR #{existing_pr} updated for {base_image}: {new_digest[:16]}…", file=sys.stderr)
         else:
             # Create new GitHub PR
             _run_git(repo_root, ["push", "-u", "origin", branch])
-            result = subprocess.run(
-                [
-                    "gh", "pr", "create",
-                    "--title", commit_title,
-                    "--body", pr_body,
-                    "--base", "main",
-                    "--head", branch,
-                    "--label", "cascadeguard",
-                    "--label", "promotion",
-                ],
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
+            pr_data, err = _github_api(
+                "POST",
+                f"https://api.github.com/repos/{gh_repo}/pulls",
+                gh_token,
+                {"title": commit_title, "body": pr_body, "base": "main", "head": branch},
             )
-            if result.returncode != 0:
-                pr_errors.append(f"{base_image}: {result.stderr.strip()}")
-                print(f"  ✗ PR for {base_image} failed: {result.stderr.strip()}", file=sys.stderr)
+            if err or not pr_data:
+                pr_errors.append(f"{base_image}: {err or 'empty response'}")
+                print(f"  ✗ PR for {base_image} failed: {err}", file=sys.stderr)
             else:
-                pr_url = result.stdout.strip()
+                pr_url = pr_data["html_url"]
                 pr_urls.append(pr_url)
                 print(f"  PR created for {base_image}: {pr_url}", file=sys.stderr)
+                # Add labels — best-effort, silently skip if labels don't exist
+                _github_api(
+                    "POST",
+                    f"https://api.github.com/repos/{gh_repo}/issues/{pr_data['number']}/labels",
+                    gh_token,
+                    {"labels": ["cascadeguard", "promotion"]},
+                )
 
         _run_git(repo_root, ["checkout", "main"])
 
