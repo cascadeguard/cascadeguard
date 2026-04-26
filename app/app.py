@@ -30,10 +30,11 @@ import tempfile
 import yaml
 import urllib.request
 import urllib.error
+import urllib.parse
 from abc import ABC, abstractmethod
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -1524,26 +1525,121 @@ def _update_dockerfile_digest(dockerfile_path: Path, old_ref: str, new_digest: s
     return modified
 
 
+def _gitlab_api(
+    method: str,
+    path: str,
+    token: str,
+    server_url: str,
+    data: Optional[Dict] = None,
+) -> Tuple[Optional[Dict], Optional[str]]:
+    """Make a GitLab REST API call.
+
+    Tries CI_JOB_TOKEN (Bearer) first, then falls back to PRIVATE-TOKEN.
+    Returns (response_dict, error_string).
+    """
+    encoded_path = path if path.startswith("http") else f"{server_url}/api/v4/{path}"
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(
+        encoded_path,
+        data=body,
+        method=method,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read()), None
+    except urllib.error.HTTPError as exc:
+        return None, f"HTTP {exc.code}: {exc.read().decode()[:200]}"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _github_api(
+    method: str,
+    url: str,
+    token: str,
+    data: Optional[Dict] = None,
+) -> Tuple[Optional[Dict], Optional[str]]:
+    """Make a GitHub REST API call. Returns (response_dict, error_string)."""
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read()), None
+    except urllib.error.HTTPError as exc:
+        return None, f"HTTP {exc.code}: {exc.read().decode()[:200]}"
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _github_repo(repo_root: Path) -> Optional[str]:
+    """Return 'owner/repo' from GITHUB_REPOSITORY env var or git remote URL."""
+    if os.environ.get("GITHUB_REPOSITORY"):
+        return os.environ["GITHUB_REPOSITORY"]
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_root, capture_output=True, text=True, check=True,
+        )
+        m = re.search(r"github\.com[:/](.+?)(?:\.git)?$", result.stdout.strip())
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
 def _create_promotion_pr(
     repo_root: Path,
     promoted: List[Dict],
     quarantine_hours: Dict[str, int],
-) -> List[str]:
+    ci_platform: str = "github",
+) -> Tuple[List[str], List[str]]:
     """Open one PR per base image, dependabot-style.
 
     Groups *promoted* entries by base image, creates a branch and PR for
     each group.  This keeps PRs independent so they can be merged (or
     reverted) individually and only the affected images rebuild.
 
-    Returns a list of PR URLs that were successfully created.
+    Returns (pr_urls, pr_errors).
     """
-    if shutil.which("gh") is None:
-        print("Warning: 'gh' CLI not found — skipping PR creation", file=sys.stderr)
-        return []
+    is_gitlab = ci_platform == "gitlab"
+
+    if is_gitlab:
+        gl_server = os.environ.get("CI_SERVER_URL", "https://gitlab.com").rstrip("/")
+        gl_project = os.environ.get("CI_PROJECT_ID") or os.environ.get("CI_PROJECT_PATH", "")
+        gl_token = os.environ.get("CI_JOB_TOKEN") or os.environ.get("GITLAB_TOKEN", "")
+        if not (gl_project and gl_token):
+            print(
+                "Warning: CI_PROJECT_ID/CI_JOB_TOKEN not set — skipping MR creation",
+                file=sys.stderr,
+            )
+            return [], []
+        gl_project_enc = urllib.parse.quote(str(gl_project), safe="")
+    else:
+        gh_token = os.environ.get("GITHUB_TOKEN", "")
+        gh_repo = _github_repo(repo_root)
+        if not (gh_token and gh_repo):
+            print("Warning: GITHUB_TOKEN not set — skipping PR creation", file=sys.stderr)
+            return [], []
+        gh_owner = gh_repo.split("/")[0]
 
     # Configure git once
+    bot_email = (
+        "cascadeguard[bot]@users.noreply.gitlab.com"
+        if is_gitlab
+        else "cascadeguard[bot]@users.noreply.github.com"
+    )
     _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
-    _run_git(repo_root, ["config", "user.email", "cascadeguard[bot]@users.noreply.github.com"])
+    _run_git(repo_root, ["config", "user.email", bot_email])
 
     # Group promoted entries by base image
     by_base: Dict[str, List[Dict]] = {}
@@ -1561,15 +1657,27 @@ def _create_promotion_pr(
         q_hours = quarantine_hours.get(base_image, _DEFAULT_QUARANTINE_HOURS)
         image_names = [e["image"] for e in entries]
 
-        # Check for existing open PR on this branch
+        # Check for existing open PR/MR on this branch
         existing_pr = None
-        if shutil.which("gh"):
-            check_result = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,title", "--jq", ".[0].number"],
-                cwd=repo_root, capture_output=True, text=True,
+        if is_gitlab:
+            resp, _ = _gitlab_api(
+                "GET",
+                f"{gl_server}/api/v4/projects/{gl_project_enc}/merge_requests"
+                f"?source_branch={urllib.parse.quote(branch, safe='')}&state=opened&per_page=1",
+                gl_token,
+                gl_server,
             )
-            if check_result.returncode == 0 and check_result.stdout.strip():
-                existing_pr = check_result.stdout.strip()
+            if resp and isinstance(resp, list) and resp:
+                existing_pr = str(resp[0]["iid"])
+        else:
+            resp, _ = _github_api(
+                "GET",
+                f"https://api.github.com/repos/{gh_repo}/pulls"
+                f"?head={urllib.parse.quote(gh_owner + ':' + branch, safe='')}&state=open&per_page=1",
+                gh_token,
+            )
+            if resp and isinstance(resp, list) and resp:
+                existing_pr = str(resp[0]["number"])
 
         # Create or update branch
         if existing_pr:
@@ -1651,48 +1759,80 @@ def _create_promotion_pr(
         )
         pr_body = "\n".join(pr_body_lines)
 
-        if existing_pr:
-            # Update existing PR — push new commit and add comment
+        update_comment = (
+            f"⬆️ **Superseded** — upstream published a new digest.\n\n"
+            f"Updated to `{new_digest[:24]}…`\n"
+            f"Quarantine: {q_hours}h ✓"
+        )
+
+        if is_gitlab:
+            _run_git(repo_root, ["push", "-u", "origin", branch])
+            if existing_pr:
+                _gitlab_api(
+                    "POST",
+                    f"{gl_server}/api/v4/projects/{gl_project_enc}/merge_requests/{existing_pr}/notes",
+                    gl_token,
+                    gl_server,
+                    {"body": update_comment},
+                )
+                pr_urls.append(f"!{existing_pr} (updated)")
+                print(f"  MR !{existing_pr} updated for {base_image}: {new_digest[:16]}…", file=sys.stderr)
+            else:
+                mr_data, err = _gitlab_api(
+                    "POST",
+                    f"{gl_server}/api/v4/projects/{gl_project_enc}/merge_requests",
+                    gl_token,
+                    gl_server,
+                    {
+                        "source_branch": branch,
+                        "target_branch": "main",
+                        "title": commit_title,
+                        "description": pr_body,
+                        "labels": "cascadeguard,promotion",
+                        "remove_source_branch": True,
+                    },
+                )
+                if err or not mr_data:
+                    pr_errors.append(f"{base_image}: {err or 'empty response'}")
+                    print(f"  ✗ MR for {base_image} failed: {err}", file=sys.stderr)
+                else:
+                    mr_url = mr_data.get("web_url", f"!{mr_data.get('iid')}")
+                    pr_urls.append(mr_url)
+                    print(f"  MR created for {base_image}: {mr_url}", file=sys.stderr)
+        elif existing_pr:
+            # Update existing GitHub PR — push new commit and add comment
             _run_git(repo_root, ["push", "origin", branch])
-            comment = (
-                f"⬆️ **Superseded** — upstream published a new digest.\n\n"
-                f"Updated to `{new_digest[:24]}…`\n"
-                f"Quarantine: {q_hours}h ✓"
-            )
-            subprocess.run(
-                ["gh", "pr", "comment", existing_pr, "--body", comment],
-                cwd=repo_root, capture_output=True, text=True,
+            _github_api(
+                "POST",
+                f"https://api.github.com/repos/{gh_repo}/issues/{existing_pr}/comments",
+                gh_token,
+                {"body": update_comment},
             )
             pr_urls.append(f"#{existing_pr} (updated)")
             print(f"  PR #{existing_pr} updated for {base_image}: {new_digest[:16]}…", file=sys.stderr)
         else:
-            # Create new PR
+            # Create new GitHub PR
             _run_git(repo_root, ["push", "-u", "origin", branch])
-
-            result = subprocess.run(
-                [
-                    "gh", "pr", "create",
-                    "--title", commit_title,
-                    "--body", pr_body,
-                    "--base", "main",
-                    "--head", branch,
-                    "--label", "cascadeguard",
-                    "--label", "promotion",
-                ],
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
+            pr_data, err = _github_api(
+                "POST",
+                f"https://api.github.com/repos/{gh_repo}/pulls",
+                gh_token,
+                {"title": commit_title, "body": pr_body, "base": "main", "head": branch},
             )
-            if result.returncode != 0:
-                pr_errors.append(f"{base_image}: {result.stderr.strip()}")
-                print(
-                    f"  ✗ PR for {base_image} failed: {result.stderr.strip()}",
-                    file=sys.stderr,
-                )
+            if err or not pr_data:
+                pr_errors.append(f"{base_image}: {err or 'empty response'}")
+                print(f"  ✗ PR for {base_image} failed: {err}", file=sys.stderr)
             else:
-                pr_url = result.stdout.strip()
+                pr_url = pr_data["html_url"]
                 pr_urls.append(pr_url)
                 print(f"  PR created for {base_image}: {pr_url}", file=sys.stderr)
+                # Add labels — best-effort, silently skip if labels don't exist
+                _github_api(
+                    "POST",
+                    f"https://api.github.com/repos/{gh_repo}/issues/{pr_data['number']}/labels",
+                    gh_token,
+                    {"labels": ["cascadeguard", "promotion"]},
+                )
 
         _run_git(repo_root, ["checkout", "main"])
 
@@ -2352,7 +2492,8 @@ def cmd_check(args) -> int:
     pr_urls: List[str] = []
     pr_errors: List[str] = []
     if promoted and promote_destination == "pr":
-        pr_urls, pr_errors = _create_promotion_pr(repo_root, promoted, quarantine_hours_map)
+        ci_platform = config.get("ci", {}).get("platform", "github")
+        pr_urls, pr_errors = _create_promotion_pr(repo_root, promoted, quarantine_hours_map, ci_platform)
     elif promoted and promote_destination == "main":
         try:
             _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
