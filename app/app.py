@@ -33,7 +33,7 @@ import urllib.error
 from abc import ABC, abstractmethod
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -1528,18 +1528,18 @@ def _create_promotion_pr(
     repo_root: Path,
     promoted: List[Dict],
     quarantine_hours: Dict[str, int],
-) -> List[str]:
+) -> Tuple[List[str], List[str]]:
     """Open one PR per base image, dependabot-style.
 
     Groups *promoted* entries by base image, creates a branch and PR for
     each group.  This keeps PRs independent so they can be merged (or
     reverted) individually and only the affected images rebuild.
 
-    Returns a list of PR URLs that were successfully created.
+    Returns (pr_urls, pr_errors).
     """
     if shutil.which("gh") is None:
         print("Warning: 'gh' CLI not found — skipping PR creation", file=sys.stderr)
-        return []
+        return [], []
 
     # Configure git once
     _run_git(repo_root, ["config", "user.name", "cascadeguard[bot]"])
