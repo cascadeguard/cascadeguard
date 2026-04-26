@@ -888,6 +888,35 @@ class TestCmdCheck:
         )
 
 
+    def test_phase4_skipped_for_self_built_image(self, tmp_path):
+        """Phase 4 tag check must be skipped for images with a source.dockerfile.
+
+        Self-built images are tracked via base-image digest (Phase 3).  Trying
+        to fetch their own tags from a private registry (e.g. GitLab) causes
+        spurious 404 errors that are then misidentified as rate-limiting,
+        blocking subsequent images.
+        """
+        dockerfile_path = "local/hello-world/Dockerfile"
+        images_yaml, state_dir = self._setup_repo(tmp_path, [
+            {
+                "name": "hello-world",
+                "image": "hello-world",
+                "tag": "latest",
+                "registry": "registry.gitlab.com/cascadeguard/cascadeguard-exemplar-web-argocd",
+                "source": {"dockerfile": dockerfile_path},
+            }
+        ], {dockerfile_path: "FROM nginx:1.28.3-alpine3.23\n"})
+
+        # _get_dockerhub_tags_rich / _get_oci_registry_tags_rich must NOT be
+        # called; if they are it means Phase 4 ran for the self-built image.
+        with patch("app._fetch_manifest_info", return_value={"digest": "sha256:aabbcc", "publishedAt": None}), \
+             patch("app._get_dockerhub_tags_rich", side_effect=AssertionError("Phase 4 ran for self-built image")), \
+             patch("app._get_oci_registry_tags_rich", side_effect=AssertionError("Phase 4 ran for self-built image")):
+            rc = cmd_check(_args(images_yaml=images_yaml, state_dir=state_dir))
+
+        assert rc in (0, 2), f"cmd_check exited {rc}"
+
+
 # ---------------------------------------------------------------------------
 # cmd_status
 # ---------------------------------------------------------------------------
