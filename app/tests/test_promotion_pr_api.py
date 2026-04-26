@@ -7,6 +7,8 @@ Covers:
   - _gitlab_api   — correct auth headers, JSON parse, HTTP error handling
   - _create_promotion_pr(ci_platform="github") — no token skip, create PR, update PR
   - _create_promotion_pr(ci_platform="gitlab") — no token skip, create MR, update MR
+  - _commit_state_changes(ci_platform="github") — no changes, commit to main, create PR
+  - _commit_state_changes(ci_platform="gitlab") — create MR, no token skip
 """
 
 import json
@@ -23,6 +25,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app import (
+    _commit_state_changes,
     _create_promotion_pr,
     _github_api,
     _github_repo,
@@ -346,3 +349,103 @@ class TestCreatePromotionPrGitLab:
         assert pr_urls == []
         assert len(pr_errors) == 1
         assert "node:22" in pr_errors[0]
+
+
+# ── _commit_state_changes ───────────────────────────────────────────────────
+
+
+def _make_state_dir(tmp_path):
+    state_dir = tmp_path / ".cascadeguard"
+    state_dir.mkdir()
+    (state_dir / "state.yaml").write_text("images: {}")
+    return state_dir
+
+
+def _git_no_changes():
+    """subprocess.run mock: git diff --cached --quiet returns 0 (nothing staged)."""
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+def _git_has_changes():
+    """subprocess.run mock: git diff --cached --quiet returns 1 (changes staged)."""
+    return SimpleNamespace(returncode=1, stdout="diff", stderr="")
+
+
+class TestCommitStateChangesNoChanges:
+    def test_returns_false_when_nothing_staged(self, tmp_path):
+        state_dir = _make_state_dir(tmp_path)
+        with patch("app._run_git"), \
+             patch("subprocess.run", return_value=_git_no_changes()):
+            result = _commit_state_changes(tmp_path, state_dir, "main")
+        assert result is False
+
+
+class TestCommitStateChangesMainDestination:
+    def test_commits_and_pushes_to_main(self, tmp_path):
+        state_dir = _make_state_dir(tmp_path)
+        with patch("app._run_git") as mock_git, \
+             patch("subprocess.run", return_value=_git_has_changes()):
+            result = _commit_state_changes(tmp_path, state_dir, "main")
+
+        assert result is True
+        calls = [str(c) for c in mock_git.call_args_list]
+        assert any("push" in c and "main" in c for c in calls)
+
+
+class TestCommitStateChangesPrGitHub:
+    def test_creates_pr_via_github_api(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "myorg/myrepo")
+        state_dir = _make_state_dir(tmp_path)
+        new_pr = {"number": 99, "html_url": "https://github.com/myorg/myrepo/pull/99"}
+
+        with patch("app._run_git"), \
+             patch("subprocess.run", return_value=_git_has_changes()), \
+             patch("urllib.request.urlopen", return_value=_fake_response(new_pr)):
+            result = _commit_state_changes(tmp_path, state_dir, "pr", ci_platform="github")
+
+        assert result is True
+
+    def test_skips_pr_when_no_github_token(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+        state_dir = _make_state_dir(tmp_path)
+
+        with patch("app._run_git"), \
+             patch("subprocess.run", side_effect=[
+                 _git_has_changes(),            # diff --cached
+                 SimpleNamespace(returncode=0, stdout="", stderr=""),  # git remote get-url
+             ]):
+            result = _commit_state_changes(tmp_path, state_dir, "pr", ci_platform="github")
+
+        assert result is True  # branch pushed; PR creation just skipped
+        assert "GITHUB_TOKEN" in capsys.readouterr().err
+
+
+class TestCommitStateChangesPrGitLab:
+    def test_creates_mr_via_gitlab_api(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CI_JOB_TOKEN", "jobtoken")
+        monkeypatch.setenv("CI_PROJECT_ID", "42")
+        monkeypatch.setenv("CI_SERVER_URL", "https://gitlab.example.com")
+        state_dir = _make_state_dir(tmp_path)
+        new_mr = {"iid": 5, "web_url": "https://gitlab.example.com/o/r/-/merge_requests/5"}
+
+        with patch("app._run_git"), \
+             patch("subprocess.run", return_value=_git_has_changes()), \
+             patch("urllib.request.urlopen", return_value=_fake_response(new_mr)):
+            result = _commit_state_changes(tmp_path, state_dir, "pr", ci_platform="gitlab")
+
+        assert result is True
+
+    def test_skips_mr_when_no_token(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("CI_JOB_TOKEN", raising=False)
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        monkeypatch.setenv("CI_PROJECT_ID", "42")
+        state_dir = _make_state_dir(tmp_path)
+
+        with patch("app._run_git"), \
+             patch("subprocess.run", return_value=_git_has_changes()):
+            result = _commit_state_changes(tmp_path, state_dir, "pr", ci_platform="gitlab")
+
+        assert result is True  # branch pushed; MR creation just skipped
+        assert "CI_JOB_TOKEN" in capsys.readouterr().err
