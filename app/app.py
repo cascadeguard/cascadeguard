@@ -2071,6 +2071,26 @@ def cmd_check(args) -> int:
     image_filter: Optional[str] = getattr(args, "image", None)
     fmt: str = getattr(args, "format", "table")
     no_commit: bool = getattr(args, "no_commit", False)
+    dry_run: bool = getattr(args, "dry_run", False)
+    skip_state: bool = getattr(args, "skip_state", False)
+
+    # --dry-run implies --no-commit
+    if dry_run:
+        no_commit = True
+
+    # Consolidate --image (single) and --images (comma-separated) into one set
+    images_filter_raw = getattr(args, "images", None)
+    effective_filter: Optional[set] = None
+    if image_filter:
+        effective_filter = {image_filter}
+    if images_filter_raw:
+        multi = {n.strip() for n in images_filter_raw.split(",") if n.strip()}
+        effective_filter = (effective_filter & multi) if effective_filter else multi
+
+    if dry_run:
+        print("DRY RUN — no state will be committed or pushed", file=sys.stderr)
+    if skip_state:
+        print("SKIP STATE — existing state files will be ignored", file=sys.stderr)
 
     # Resolve check config from .cascadeguard.yaml
     check_config = _resolve_check_config(config)
@@ -2095,7 +2115,7 @@ def cmd_check(args) -> int:
             continue
         if not image.get("enabled", True):
             continue
-        if image_filter and name != image_filter:
+        if effective_filter and name not in effective_filter:
             continue
 
         # Find Dockerfile (local or remote)
@@ -2132,7 +2152,7 @@ def cmd_check(args) -> int:
         # Write/update image state file
         state_file = images_dir / f"{name}.yaml"
         existing = None
-        if state_file.exists():
+        if state_file.exists() and not skip_state:
             with open(state_file) as f:
                 existing = yaml.safe_load(f) or {}
 
@@ -2177,13 +2197,13 @@ def cmd_check(args) -> int:
             with open(state_file) as f:
                 state = yaml.safe_load(f) or {}
             name = state.get("name", state_file.stem)
-            if image_filter:
+            if effective_filter:
                 continue  # skip base images when filtering by enrolled image
 
             registry = state.get("registry", "docker.io")
             repository = state.get("repository", "")
             tag = str(state.get("tag", "")) if state.get("tag") else ""
-            recorded_digest = state.get("currentDigest") or None
+            recorded_digest = None if skip_state else (state.get("currentDigest") or None)
 
             if not repository or not tag:
                 results.append({"image": f"base:{name}", "status": "skipped", "reason": "no registry coordinates"})
@@ -2247,7 +2267,7 @@ def cmd_check(args) -> int:
         name = image.get("name")
         if not name or not image.get("enabled", True):
             continue
-        if image_filter and name != image_filter:
+        if effective_filter and name not in effective_filter:
             continue
         # Read lastChecked from image state if available
         img_state_file = images_dir / f"{name}.yaml"
@@ -2289,7 +2309,7 @@ def cmd_check(args) -> int:
 
         # Load existing state to compare against (not images.yaml latest_stable_tags)
         img_state_file = images_dir / f"{name}.yaml"
-        if img_state_file.exists():
+        if img_state_file.exists() and not skip_state:
             with open(img_state_file) as f:
                 img_state = yaml.safe_load(f) or {}
         else:
@@ -2479,7 +2499,7 @@ def cmd_check(args) -> int:
             img_name = image.get("name")
             if not img_name or not image.get("enabled", True):
                 continue
-            if image_filter and img_name != image_filter:
+            if effective_filter and img_name not in effective_filter:
                 continue
 
             # Per-image promote override (images.yaml `promote: false`)
@@ -2589,7 +2609,7 @@ def cmd_check(args) -> int:
             img_name = image.get("name")
             if not img_name or not image.get("enabled", True):
                 continue
-            if image_filter and img_name != image_filter:
+            if effective_filter and img_name not in effective_filter:
                 continue
             if not _resolve_bool_setting("promote", image, config, default=True):
                 continue
@@ -2624,7 +2644,15 @@ def cmd_check(args) -> int:
                 if not full_ref:
                     continue
 
-                modified = _update_dockerfile_digest(dockerfile_path, full_ref, promoted_digest)
+                if dry_run:
+                    # Preview only — show what would be promoted without touching the file
+                    print(
+                        f"  [DRY RUN] would promote {img_name}: {bi_name} → {promoted_digest[:24]}… in {dockerfile_rel}",
+                        file=sys.stderr,
+                    )
+                    modified = False
+                else:
+                    modified = _update_dockerfile_digest(dockerfile_path, full_ref, promoted_digest)
                 if modified:
                     quarantine_hours_map[bi_name] = q_hours
                     promoted.append({
@@ -3500,7 +3528,24 @@ Commands:
         "--no-commit",
         action="store_true",
         default=False,
-        help="Dry run — skip all git commit/push/PR operations",
+        help="Skip all git commit/push/PR operations (alias: use --dry-run for a more descriptive flag)",
+    )
+    images_check.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Run full check pipeline but skip all git commits and pushes (no state persisted)",
+    )
+    images_check.add_argument(
+        "--skip-state",
+        action="store_true",
+        default=False,
+        help="Ignore existing state files; treat all tags as freshly discovered (state reset for this run only)",
+    )
+    images_check.add_argument(
+        "--images",
+        default=None,
+        help="Comma-separated list of image names to check (e.g. nginx,redis); checks all if omitted",
     )
 
     # images status
