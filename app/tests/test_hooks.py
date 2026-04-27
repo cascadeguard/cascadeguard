@@ -196,3 +196,71 @@ class TestRunHooks:
         ):
             result = _run_hooks("post-image-check", config, tmp_path, {}, state, {})
         assert result == state
+
+from app import _run_post_run_hooks
+
+
+class TestRunPostRunHooks:
+
+    def test_no_hooks_returns_without_error(self, tmp_path):
+        # Should silently do nothing when no post-run hooks configured
+        _run_post_run_hooks({}, tmp_path, tmp_path, [], 0)
+
+    def test_hook_receives_correct_payload(self, tmp_path):
+        # Hook dumps the received hookPoint and newTagCount back to a file
+        out_file = tmp_path / "received.json"
+        hook = tmp_path / "capture.sh"
+        hook.write_text(
+            f"#!/bin/sh\n"
+            f"cat > {out_file}\n"
+        )
+        hook.chmod(hook.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        config = {"hooks": {"post-run": [{"path": "capture.sh"}]}}
+        results = [{"image": "nginx", "status": "new-tags", "new_tags": ["1.28", "1.29"]}]
+        _run_post_run_hooks(config, tmp_path, tmp_path / "state", results, 2)
+
+        received = json.loads(out_file.read_text())
+        assert received["hookPoint"] == "post-run"
+        assert received["summary"]["newTagCount"] == 2
+        assert received["summary"]["totalImages"] == 1
+        assert received["stateDir"] == str(tmp_path / "state")
+
+    def test_hook_failure_does_not_raise(self, tmp_path):
+        _make_hook(tmp_path, "fail.sh", "exit 1")
+        config = {"hooks": {"post-run": [{"path": "fail.sh"}]}}
+        # Should not raise even on hook failure
+        _run_post_run_hooks(config, tmp_path, tmp_path, [], 0)
+
+    def test_hook_timeout_does_not_raise(self, tmp_path):
+        _make_hook(tmp_path, "slow.sh", "sleep 999")
+        config = {"hooks": {"post-run": [{"path": "slow.sh"}]}}
+        with unittest.mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="slow.sh", timeout=60),
+        ):
+            _run_post_run_hooks(config, tmp_path, tmp_path, [], 0)
+
+    def test_path_traversal_rejected(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        _make_hook(outside, "evil.sh", "echo malicious")
+        config = {"hooks": {"post-run": [{"path": "../outside/evil.sh"}]}}
+        # Should not raise — hook is silently skipped
+        _run_post_run_hooks(config, repo_root, repo_root / "state", [], 0)
+
+    def test_missing_hook_file_skipped(self, tmp_path):
+        config = {"hooks": {"post-run": [{"path": "nonexistent.sh"}]}}
+        _run_post_run_hooks(config, tmp_path, tmp_path / "state", [], 0)
+
+    def test_zero_new_tags_reported(self, tmp_path):
+        out_file = tmp_path / "received.json"
+        hook = tmp_path / "capture.sh"
+        hook.write_text(f"#!/bin/sh\ncat > {out_file}\n")
+        hook.chmod(hook.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        config = {"hooks": {"post-run": [{"path": "capture.sh"}]}}
+        _run_post_run_hooks(config, tmp_path, tmp_path / "state", [], 0)
+        received = json.loads(out_file.read_text())
+        assert received["summary"]["newTagCount"] == 0
+        assert received["summary"]["totalImages"] == 0
