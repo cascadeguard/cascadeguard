@@ -843,6 +843,73 @@ def _run_hooks(
     return merged
 
 
+def _run_post_run_hooks(
+    config: dict,
+    repo_root: Path,
+    state_dir: Path,
+    results: list,
+    total_new_tag_count: int,
+) -> None:
+    """Invoke configured post-run hooks once after all images are processed.
+
+    Unlike post-image-check hooks, post-run hooks fire once per check run.
+    The hook receives a summary payload and the state directory path so it
+    can read ALL state files. Hook stdout is ignored (no state to merge).
+    """
+    hook_entries = config.get("hooks", {}).get("post-run", [])
+    if not hook_entries:
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stdin_payload = json.dumps({
+        "hookPoint": "post-run",
+        "results": results,
+        "summary": {
+            "totalImages": len(results),
+            "newTagCount": total_new_tag_count,
+        },
+        "stateDir": str(state_dir),
+        "timestamp": timestamp,
+    })
+
+    for entry in hook_entries:
+        if not isinstance(entry, dict):
+            print("  hook config: entry must be a mapping — skipping", file=sys.stderr)
+            continue
+
+        hook_path_raw = entry.get("path")
+        if not hook_path_raw:
+            print("  hook config: missing 'path' — skipping entry", file=sys.stderr)
+            continue
+
+        hook_path = repo_root / hook_path_raw
+        if not hook_path.resolve().is_relative_to(repo_root.resolve()):
+            print(f"  hook path outside repo root: {hook_path_raw} — skipping", file=sys.stderr)
+            continue
+        if not hook_path.exists():
+            print(f"  hook not found: {hook_path} — skipping", file=sys.stderr)
+            continue
+
+        try:
+            result = subprocess.run(
+                [str(hook_path)],
+                input=stdin_payload,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(repo_root),
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  post-run hook timed out (60s): {hook_path_raw}", file=sys.stderr)
+            continue
+        except Exception as exc:
+            print(f"  post-run hook error ({hook_path_raw}): {exc}", file=sys.stderr)
+            continue
+
+        if result.returncode != 0:
+            snippet = result.stderr.strip()[:200]
+            print(f"  post-run hook exit {result.returncode} ({hook_path_raw}): {snippet}", file=sys.stderr)
+
 def merge_defaults(images: list, config: dict) -> list:
     """Apply repo-level defaults from .cascadeguard.yaml to each image.
 
@@ -2373,6 +2440,22 @@ def cmd_check(args) -> int:
                     print(f"  ? {img}: {r['reason']}")
                 elif status == "skipped":
                     print(f"  - {img}: skipped ({r['reason']})")
+
+    # ── Job summary (new tag count) ──────────────────────────────────────
+    total_new_tag_count = sum(len(r.get("new_tags", [])) for r in results if r.get("status") == "new-tags")
+    images_checked = len([r for r in results if r.get("status") not in ("skipped",)])
+    summary_line = f"CascadeGuard check: {images_checked} image(s) checked, {total_new_tag_count} new upstream tag(s) found"
+    print(f"\n{summary_line}", file=sys.stderr)
+    step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary_path:
+        try:
+            with open(step_summary_path, "a") as _sf:
+                _sf.write(f"\n## CascadeGuard\n\n- {summary_line}\n")
+        except OSError:
+            pass
+
+    # ── Post-run hooks ─────────────────────────────────────────────────────
+    _run_post_run_hooks(config, repo_root, state_dir, results, total_new_tag_count)
 
     # ── Phase 5: Promote images past quarantine ────────────────────────────
     promoted: List[Dict] = []
