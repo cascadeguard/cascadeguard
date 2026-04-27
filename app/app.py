@@ -1841,7 +1841,8 @@ def _create_promotion_pr(
         )
 
         if is_gitlab:
-            _run_git(repo_root, ["push", "-u", "origin", branch])
+            push_args = ["push", "-u", "origin", branch] if existing_pr else ["push", "--force", "-u", "origin", branch]
+            _run_git(repo_root, push_args)
             if existing_pr:
                 _gitlab_api(
                     "POST",
@@ -1887,7 +1888,7 @@ def _create_promotion_pr(
             print(f"  PR #{existing_pr} updated for {base_image}: {new_digest[:16]}…", file=sys.stderr)
         else:
             # Create new GitHub PR
-            _run_git(repo_root, ["push", "-u", "origin", branch])
+            _run_git(repo_root, ["push", "--force", "-u", "origin", branch])
             pr_data, err = _github_api(
                 "POST",
                 f"https://api.github.com/repos/{gh_repo}/pulls",
