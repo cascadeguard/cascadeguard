@@ -645,7 +645,7 @@ class TestNamespaceResolution:
 
         def mock_oci(registry, repository):
             oci_calls.append((registry, repository))
-            return [{"name": "1.0", "digest": None, "last_updated": None}]
+            return [{"name": "1.0", "digest": None, "last_updated": None}], None
 
         args = SimpleNamespace(
             images_yaml=str(images_yaml),
@@ -780,11 +780,12 @@ class TestGetOciRegistryTagsRich:
         responses = iter([self._make_token_resp(), self._make_tags_resp(["1.0", "1.1", "2.0"])])
 
         with patch("urllib.request.urlopen", side_effect=lambda *a, **kw: next(responses)):
-            result = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
+            tags, error = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
 
-        assert len(result) == 3
-        assert all(set(t.keys()) >= {"name", "digest", "last_updated"} for t in result)
-        assert {t["name"] for t in result} == {"1.0", "1.1", "2.0"}
+        assert error is None
+        assert len(tags) == 3
+        assert all(set(t.keys()) >= {"name", "digest", "last_updated"} for t in tags)
+        assert {t["name"] for t in tags} == {"1.0", "1.1", "2.0"}
 
     def test_paginates_via_link_header(self):
         from app import _get_oci_registry_tags_rich
@@ -799,9 +800,10 @@ class TestGetOciRegistryTagsRich:
         responses = iter([self._make_token_resp(), page1, self._make_tags_resp(["2.0", "2.1"])])
 
         with patch("urllib.request.urlopen", side_effect=lambda *a, **kw: next(responses)):
-            result = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
+            tags, error = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
 
-        assert {t["name"] for t in result} == {"1.0", "1.1", "2.0", "2.1"}
+        assert error is None
+        assert {t["name"] for t in tags} == {"1.0", "1.1", "2.0", "2.1"}
 
     def test_returns_empty_on_network_error(self):
         from app import _get_oci_registry_tags_rich
@@ -818,9 +820,10 @@ class TestGetOciRegistryTagsRich:
             return v
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            result = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
+            tags, error = _get_oci_registry_tags_rich("ghcr.io", "myorg/myimage")
 
-        assert result == []
+        assert error == "network_error"
+        assert tags == []
 
     def test_quay_io_proceeds_unauthenticated_on_token_failure(self):
         from app import _get_oci_registry_tags_rich
@@ -838,9 +841,10 @@ class TestGetOciRegistryTagsRich:
             return v
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            result = _get_oci_registry_tags_rich("quay.io", "oauth2-proxy/oauth2-proxy")
+            tags, error = _get_oci_registry_tags_rich("quay.io", "oauth2-proxy/oauth2-proxy")
 
-        assert {t["name"] for t in result} == {"v1.0"}
+        assert error is None
+        assert {t["name"] for t in tags} == {"v1.0"}
 
 
 # ── _get_upstream_tags_rich (dispatcher) ────────────────────────────────────
@@ -874,7 +878,7 @@ class TestGetUpstreamTagsRich:
         from app import _get_upstream_tags_rich
 
         with patch("app._get_dockerhub_tags_rich") as mock_dh:
-            with patch("app._get_oci_registry_tags_rich", return_value=[]) as mock_oci:
+            with patch("app._get_oci_registry_tags_rich", return_value=([], None)) as mock_oci:
                 _get_upstream_tags_rich("ghcr.io", "bitnami", "redis")
 
         mock_dh.assert_not_called()
@@ -884,7 +888,7 @@ class TestGetUpstreamTagsRich:
         from app import _get_upstream_tags_rich
 
         with patch("app._get_dockerhub_tags_rich") as mock_dh:
-            with patch("app._get_oci_registry_tags_rich", return_value=[]) as mock_oci:
+            with patch("app._get_oci_registry_tags_rich", return_value=([], None)) as mock_oci:
                 _get_upstream_tags_rich("quay.io", "oauth2-proxy", "oauth2-proxy")
 
         mock_dh.assert_not_called()
