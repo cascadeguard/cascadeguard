@@ -1691,10 +1691,10 @@ def _create_promotion_pr(
     if is_gitlab:
         gl_server = os.environ.get("CI_SERVER_URL", "https://gitlab.com").rstrip("/")
         gl_project = os.environ.get("CI_PROJECT_ID") or os.environ.get("CI_PROJECT_PATH", "")
-        gl_token = os.environ.get("CI_JOB_TOKEN") or os.environ.get("GITLAB_TOKEN", "")
+        gl_token = os.environ.get("GITLAB_TOKEN") or os.environ.get("CI_JOB_TOKEN", "")
         if not (gl_project and gl_token):
             print(
-                "Warning: CI_PROJECT_ID/CI_JOB_TOKEN not set — skipping MR creation",
+                "Warning: CI_PROJECT_ID/GITLAB_TOKEN/CI_JOB_TOKEN not set — skipping MR creation",
                 file=sys.stderr,
             )
             return [], []
