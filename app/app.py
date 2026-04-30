@@ -2068,9 +2068,11 @@ def cmd_check(args) -> int:
     base_images_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    image_filter: Optional[str] = getattr(args, "image", None)
+    _image_arg: Optional[str] = getattr(args, "image", None)
+    image_filter: Optional[set] = set(i.strip() for i in _image_arg.split(",") if i.strip()) if _image_arg else None
     fmt: str = getattr(args, "format", "table")
     no_commit: bool = getattr(args, "no_commit", False)
+    force_check: bool = getattr(args, "force_check", False)
 
     # Resolve check config from .cascadeguard.yaml
     check_config = _resolve_check_config(config)
@@ -2095,7 +2097,7 @@ def cmd_check(args) -> int:
             continue
         if not image.get("enabled", True):
             continue
-        if image_filter and name != image_filter:
+        if image_filter and name not in image_filter:
             continue
 
         # Find Dockerfile (local or remote)
@@ -2247,7 +2249,7 @@ def cmd_check(args) -> int:
         name = image.get("name")
         if not name or not image.get("enabled", True):
             continue
-        if image_filter and name != image_filter:
+        if image_filter and name not in image_filter:
             continue
         # Read lastChecked from image state if available
         img_state_file = images_dir / f"{name}.yaml"
@@ -2298,7 +2300,7 @@ def cmd_check(args) -> int:
         existing_tags = img_state.get("upstreamTags") or {}
         if isinstance(existing_tags, list):
             existing_tags = {}
-        known_tag_names: Set[str] = set(existing_tags.keys())
+        known_tag_names: Set[str] = set() if force_check else set(existing_tags.keys())
 
         # For rate-limit detection, use images.yaml latest_stable_tags if present,
         # otherwise fall back to known tags from state file
@@ -2479,7 +2481,7 @@ def cmd_check(args) -> int:
             img_name = image.get("name")
             if not img_name or not image.get("enabled", True):
                 continue
-            if image_filter and img_name != image_filter:
+            if image_filter and img_name not in image_filter:
                 continue
 
             # Per-image promote override (images.yaml `promote: false`)
@@ -2589,7 +2591,7 @@ def cmd_check(args) -> int:
             img_name = image.get("name")
             if not img_name or not image.get("enabled", True):
                 continue
-            if image_filter and img_name != image_filter:
+            if image_filter and img_name not in image_filter:
                 continue
             if not _resolve_bool_setting("promote", image, config, default=True):
                 continue
@@ -3482,7 +3484,14 @@ Commands:
     images_check.add_argument(
         "--image",
         default=None,
-        help="Scope check to a single image name (state file stem)",
+        help="Scope check to one or more image names (comma-separated, or repeat flag)",
+    )
+    images_check.add_argument(
+        "--force-check",
+        action="store_true",
+        default=False,
+        dest="force_check",
+        help="Bypass state cache — treat all upstream tags as unseen and always report findings",
     )
     images_check.add_argument(
         "--format",
